@@ -1,0 +1,14 @@
+# Created by the installer or at run time: personal to each machine, never committed
+/config.json
+/HUB.md
+/HANDOFF.md
+/MEMORY.md
+/state/
+/files/
+/inbox/
+
+# Dependencies and editor leftovers
+node_modules/
+*.bak-aihub
+*.log
+.vscode/

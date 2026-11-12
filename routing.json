@@ -1,0 +1,82 @@
+{
+  "_about": "Routing knowledge for ask.ps1, route.ps1, fanout.ps1 and council.ps1. Edit this file to change who gets what; no code change needed. Models differ per account: run 'gemini-keys models' to see what your keys can use, and 'agy models' / the Codex model picker for the others.",
+
+  "helpers": {
+    "gemini": {
+      "what": "Gemini CLI on free API keys (several keys). Quota is requests per day per MODEL per key (about 20), so one job = one request: send material inline, never let it roam a folder.",
+      "good_at": ["summarize", "extract", "classify", "small questions", "second opinions", "reading text handed to it"],
+      "weak_at": ["anything needing the PC's disk", "pro-level reasoning (Pro models have no free quota)", "Google Search (the free keys hit 429 on it)"]
+    },
+    "gemini-app": {
+      "what": "Gemini web app on your Google AI plan, driven by a hidden Chrome. Real Google Search, very large context, file upload, three models (fast / everyday / most capable) with thinking levels.",
+      "good_at": ["web research with sources", "current events, prices, versions, docs lookup", "huge documents and many files at once", "strong reasoning on big material", "PDFs and images"],
+      "weak_at": ["speed (15-75 s per job)", "more than 25 jobs a day (a safety cap, see limits)", "structured output"]
+    },
+    "codex": {
+      "what": "Codex (ChatGPT login). The only helper allowed to change files.",
+      "good_at": ["code edits in 1-5 files", "boilerplate and tests", "image generation ($imagegen)", "tasks that need a sandboxed shell"],
+      "weak_at": ["small quota on some plans", "web research"]
+    },
+    "agy": {
+      "what": "Antigravity CLI on your Google login. Read-only plan mode. The quota is small and resets weekly, so it is the last resort.",
+      "good_at": ["last-resort second opinion"],
+      "weak_at": ["tiny weekly quota"]
+    },
+    "claude": {
+      "what": "The boss (Claude Code). Plans, design, decisions, final review, git, anything the user must approve.",
+      "good_at": ["judgement", "design", "coordination", "checking helper output"],
+      "weak_at": ["its own usage limit: do not spend it on bulk reading"]
+    }
+  },
+
+  "kinds": {
+    "web-research": { "chain": ["gemini-app", "codex"], "never": ["gemini"], "effort": "medium", "noDisk": true, "why": "needs live web: the app has Google Search grounding; free Gemini CLI keys hit 429 on Google Search, so no gemini here" },
+    "big-read":     { "chain": ["gemini-app", "gemini", "agy"], "effort": "medium", "why": "huge input: the app takes the largest files; split into chunks for the CLI keys" },
+    "summarize":    { "chain": ["gemini", "gemini-app", "codex", "agy"], "effort": "low", "why": "cheap and simple" },
+    "extract":      { "chain": ["gemini", "gemini-app", "codex"], "effort": "low", "why": "mechanical" },
+    "qa":           { "chain": ["gemini", "codex", "gemini-app"], "effort": "low", "why": "short question" },
+    "second-opinion": { "chain": ["gemini-app", "gemini", "codex"], "effort": "high", "why": "wants the strongest reasoning that is free" },
+    "code-edit":    { "chain": ["codex"], "effort": "medium", "edit": true, "why": "only Codex may change files" },
+    "image":        { "chain": ["codex"], "effort": "medium", "edit": true, "why": "Codex has $imagegen" },
+    "general":      { "chain": ["gemini", "gemini-app", "codex", "agy"], "effort": "medium", "why": "default" }
+  },
+
+  "models": {
+    "gemini": {
+      "_about": "Candidate models per effort, tried in order; a model that is gone (404) or out of quota is skipped automatically. Check yours with: gemini-keys models",
+      "low": ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+      "medium": ["gemini-3.6-flash", "gemini-3-flash-preview", "gemini-3.5-flash-lite"],
+      "high": ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3-flash-preview"]
+    },
+    "gemini-app": {
+      "_about": "lite / flash / pro = the 1st / 2nd / 3rd entry of the app's model menu; think = the thinking level.",
+      "low": { "model": "lite", "think": "low" },
+      "medium": { "model": "flash", "think": "medium" },
+      "high": { "model": "pro", "think": "high" }
+    },
+    "codex": {
+      "_about": "An empty model means Codex's own default. effort is Codex's reasoning effort (low, medium, high, xhigh).",
+      "low": { "model": "", "effort": "low" },
+      "medium": { "model": "", "effort": "medium" },
+      "high": { "model": "", "effort": "high" }
+    }
+  },
+
+  "limits": {
+    "gemini_chunk_kb": 300,
+    "gemini_app_chunk_kb": 1500,
+    "codex_chunk_kb": 200,
+    "gemini_app_daily_cap": 25,
+    "gemini_cli_timeout_seconds": 240,
+    "agy_max_inline_kb": 20,
+    "park_hours": { "limit": 5, "busy": 0.25, "model_gone": 24, "auth": 1, "agy_limit": 24, "key_rejected": 24 }
+  },
+
+  "triggers": {
+    "web": "latest|current|today|recent|news|price|prices|release|version|changelog|search the web|look up|online|documentation|docs for|who is|when did|2026|2027",
+    "edit": "edit|change|rename|refactor|implement|fix|add a|create a file|write a script|apply|patch|rewrite",
+    "image": "generate an? image|concept image|illustration|picture of|logo|\\$imagegen",
+    "summarize": "summari[sz]e|tl;?dr|overview|brief me|key points",
+    "opinion": "second opinion|review my|critique|is this a good|compare|trade-?offs?|should i|pros and cons"
+  }
+}
