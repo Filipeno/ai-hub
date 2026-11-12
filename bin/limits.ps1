@@ -29,4 +29,8 @@ else {
 if (Test-Path $countFile) {
     try { $n = Get-Content $countFile -Raw | ConvertFrom-Json; if ($n.date -eq (Get-Date).ToString('yyyy-MM-dd')) { Write-Host "Gemini app jobs today: $($n.count)" } } catch {}
 }
+$pplxFile = Join-Path $script:Hub 'state\perplexity-count.json'
+if (Test-Path $pplxFile) {
+    try { $n = Get-Content $pplxFile -Raw | ConvertFrom-Json; if ($n.date -eq (Get-Date).ToString('yyyy-MM-dd')) { Write-Host "Perplexity jobs today: $($n.count) (each costs a few cents; daily cap in routing.json)" } } catch {}
+}
 if (Test-Path $logFile) { Write-Host ''; Write-Host 'Last jobs:'; Get-Content $logFile -Tail 8 | ForEach-Object { "  $_" } }

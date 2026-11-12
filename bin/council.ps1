@@ -15,6 +15,8 @@ $Lanes = @($Lanes | ForEach-Object { $_ -split ',' } | Where-Object { $_ })   # 
 . "$PSScriptRoot\lib\hub.ps1"
 . "$PSScriptRoot\lib\collect.ps1"
 $ask = Join-Path $PSScriptRoot 'ask.ps1'
+# The default lanes are only the AIs you connected. Add perplexity yourself with -Lanes (it costs money per request).
+if (-not $PSBoundParameters.ContainsKey('Lanes')) { $Lanes = @($Lanes | Where-Object { Test-HelperEnabled $_ }) }
 New-Item -ItemType Directory -Force $Out | Out-Null
 
 $mat = $null

@@ -79,6 +79,7 @@ $catalog = [ordered]@{
     'claude'     = @{ n = 'Claude Code';  d = 'the boss: plans, decides, hands bulk work to the others (needs Claude Code installed)' }
     'gemini'     = @{ n = 'Gemini CLI';   d = 'free Gemini API keys: fast, cheap helper for summaries, extraction, small questions' }
     'gemini-app' = @{ n = 'Gemini web app (browser robot)'; d = 'uses your Google AI plan: live Google Search, huge files, strongest Gemini models  [automation, read the risk notice]' }
+    'perplexity' = @{ n = 'Perplexity (API)'; d = 'pay-as-you-go API key: live web search with cited sources, a few cents per question (daily cap built in)' }
     'codex'      = @{ n = 'Codex';        d = 'ChatGPT login: the only helper that edits files; code edits, tests, images' }
     'agy'        = @{ n = 'Antigravity CLI (agy)'; d = 'Google login: small weekly quota, last-resort helper' }
 }
@@ -88,23 +89,24 @@ Step 'Which AIs do you want to connect?'
 if (-not $AIs) {
     $i = 1
     foreach ($k in $keys) {
-        $found = switch ($k) { 'claude' { Test-Command 'claude' } 'gemini' { Test-Command 'gemini' } 'codex' { Test-Command 'codex' } 'agy' { Test-Agy } 'gemini-app' { [bool](Find-Chrome) } }
+        $found = switch ($k) { 'claude' { Test-Command 'claude' } 'gemini' { Test-Command 'gemini' } 'codex' { Test-Command 'codex' } 'agy' { Test-Agy } 'gemini-app' { [bool](Find-Chrome) } 'perplexity' { (Test-Path (Join-Path $UserHome '.perplexity\api-key.txt')) -or [bool][Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User') } }
         $tag = if ($found) { '(found on this PC)' } else { '(not installed yet; I can install it)' }
         if ($k -eq 'gemini-app') { $tag = if (Find-Chrome) { '(Chrome found)' } else { '(needs Chrome or Edge)' } }
+        if ($k -eq 'perplexity') { $tag = if ($found) { '(key found)' } else { '(needs an API key from console.perplexity.ai)' } }
         if ($k -eq 'claude' -and -not $found) { $tag = '(not installed; get it from https://claude.com/claude-code)' }
         Write-Host ('  {0}. {1,-34} {2}' -f $i, $catalog[$k].n, $tag) -ForegroundColor White
         Write-Host ('     {0}' -f $catalog[$k].d) -ForegroundColor DarkGray
         $i++
     }
     Write-Host ''
-    Say 'Type the numbers you want, separated by commas (for example 1,2,4), or "all". At least two make a team.'
+    Say 'Type the numbers you want, separated by commas (for example 1,2,5), or "all". At least two make a team.'
     do {
         $answer = Read-Host 'Your choice'
         $picked = @()
         if ($answer.Trim().ToLower() -eq 'all') { $picked = $keys }
-        else { foreach ($n in ($answer -split '[,\s]+' | Where-Object { $_ })) { if ($n -match '^[1-5]$') { $picked += $keys[[int]$n - 1] } } }
+        else { foreach ($n in ($answer -split '[,\s]+' | Where-Object { $_ })) { if ($n -match '^[1-6]$') { $picked += $keys[[int]$n - 1] } } }
         $picked = @($picked | Select-Object -Unique)
-        if ($picked.Count -eq 0) { Say 'Please type at least one number from 1 to 5.' 'Yellow' }
+        if ($picked.Count -eq 0) { Say 'Please type at least one number from 1 to 6.' 'Yellow' }
     } while ($picked.Count -eq 0)
     $AIs = $picked
 }
@@ -186,6 +188,17 @@ foreach ($ai in $AIs) {
             } else { $notes.Add('Sign the Gemini robot in:  gemini-app login') }
             $connected.Add('gemini-app')
         }
+        'perplexity' {
+            Say 'Perplexity is used through its API: pay as you go (a few cents per question), no subscription needed. Create a key at https://console.perplexity.ai/project/keys and set a spending limit there.'
+            Say 'The tool also stops after 40 Perplexity jobs a day (routing.json -> limits.perplexity_daily_cap).'
+            $pk = Join-Path $UserHome '.perplexity\api-key.txt'
+            if (-not (Test-Path $pk) -and -not [Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User')) {
+                if ($Yes) { Say 'Skipped: the key needs hidden typing. Run later:  perplexity-key add' 'Yellow' }
+                elseif (Confirm-Step 'Add your Perplexity API key now? (hidden input; stored only in your user profile)') { & (Join-Path $Hub 'bin\perplexity-key.ps1') add }
+            }
+            if (-not ((Test-Path $pk) -or [Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User'))) { $notes.Add('Add your Perplexity API key:  perplexity-key add') }
+            $connected.Add('perplexity')
+        }
         'codex' {
             if (-not (Test-Command 'codex')) {
                 if (Confirm-Step 'Codex is not installed. Install it now with: npm install -g @openai/codex ?') { npm install -g '@openai/codex' 2>&1 | Select-Object -Last 2 | ForEach-Object { Say "  $_" } }
@@ -229,6 +242,7 @@ $config = [ordered]@{
     enabled        = @($connected)
     geminiKeysFile = Join-Path $UserHome '.gemini\api-keys.txt'
     robotProfile   = Join-Path $UserHome '.gemini-app-profile'
+    perplexityKeyFile = Join-Path $UserHome '.perplexity\api-key.txt'
     sourceRoots    = @($sourceRoots)
 }
 $config | ConvertTo-Json | Set-Content $cfgFile -Encoding UTF8
@@ -250,8 +264,8 @@ if (-not $NoPath) {
 }
 
 # ---------- 5. self-test ----------
-$tests = @($connected | Where-Object { $_ -in 'gemini', 'gemini-app', 'codex' })
-if (-not $SkipTests -and $tests.Count -gt 0 -and (Confirm-Step "Run one tiny test job on each connected helper ($($tests -join ', '))? It uses a few free requests.")) {
+$tests = @($connected | Where-Object { $_ -in 'gemini', 'gemini-app', 'codex' -or ($_ -eq 'perplexity' -and ((Test-Path (Join-Path $UserHome '.perplexity\api-key.txt')) -or [Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User'))) })
+if (-not $SkipTests -and $tests.Count -gt 0 -and (Confirm-Step "Run one tiny test job on each connected helper ($($tests -join ', '))? It uses a few requests (about a cent in total if Perplexity is included).")) {
     Step 'Testing'
     foreach ($t in $tests) {
         $out = Join-Path $Hub "files\install-test-$t.md"

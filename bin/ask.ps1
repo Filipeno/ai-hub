@@ -10,11 +10,11 @@
 #   -InputFile  material for the job (text). Gemini CLI/Codex get it on stdin (one request, no folder roaming);
 #            the Gemini app gets it uploaded as a file. Keep it under the chunk limits in routing.json (fanout.ps1 splits big input).
 #   -NoDisk  the task needs nothing from the PC's disk, so the Gemini app may take it without attached files.
-# Helpers: gemini (free API keys) | gemini-app (Plus plan, hidden Chrome, 25 jobs/day) | codex (only one that edits) | agy (tiny weekly quota).
+# Helpers: gemini (free API keys) | gemini-app (Google AI plan, hidden Chrome, 25 jobs/day) | perplexity (pay-as-you-go API, cited web search) | codex (only one that edits) | agy (tiny weekly quota).
 # Questions: every brief tells the helper to reply "QUESTION: ..." instead of guessing; saved in <hub>\state\questions, exit 10.
 # Exit codes: 0 done | 2 bad arguments | 3 no helper could do it | 10 the helper asked a question (answer with -AnswerId)
 param(
-    [ValidateSet('auto', 'gemini', 'gemini-app', 'codex', 'agy')][string]$Helper = 'auto',
+    [ValidateSet('auto', 'gemini', 'gemini-app', 'perplexity', 'codex', 'agy')][string]$Helper = 'auto',
     [ValidateSet('read', 'edit')][string]$Mode = 'read',
     [string]$Kind = 'general',
     [ValidateSet('', 'low', 'medium', 'high')][string]$Effort = '',
@@ -37,6 +37,7 @@ $stateDir = Join-Path $hub 'state'
 $questionDir = Join-Path $stateDir 'questions'
 $cooldownFile = Join-Path $stateDir 'cooldown.json'
 $appCountFile = Join-Path $stateDir 'gemini-app-count.json'
+$pplxCountFile = Join-Path $stateDir 'perplexity-count.json'
 $logFile = Join-Path $stateDir 'ask.log'
 New-Item -ItemType Directory -Force $stateDir, $questionDir | Out-Null
 
@@ -129,6 +130,19 @@ function Get-AppCount {
 }
 function Add-AppCount { @{ date = (Get-Date).ToString('yyyy-MM-dd'); count = (Get-AppCount) + 1 } | ConvertTo-Json | Set-Content $appCountFile }
 
+# ---- Perplexity (pay-as-you-go API): key, and a daily job cap so a loop cannot run up a bill ----
+function Get-PerplexityKey {
+    $f = $cfg.perplexityKeyFile
+    if ($f -and (Test-Path $f)) { $k = (Get-Content $f -Raw).Trim(); if ($k) { return $k } }
+    return [Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User')
+}
+function Get-PplxCount {
+    $today = (Get-Date).ToString('yyyy-MM-dd')
+    if (Test-Path $pplxCountFile) { try { $c = Get-Content $pplxCountFile -Raw | ConvertFrom-Json; if ($c.date -eq $today) { return [int]$c.count } } catch {} }
+    return 0
+}
+function Add-PplxCount { @{ date = (Get-Date).ToString('yyyy-MM-dd'); count = (Get-PplxCount) + 1 } | ConvertTo-Json | Set-Content $pplxCountFile }
+
 function Get-Reason([string]$all) {
     if ($all -match $busyRx) { 'busy' } elseif ($all -match $limitRx) { 'limit' } elseif ($all -match $goneRx) { 'model_gone' } elseif ($all -match $authRx) { 'auth' } else { 'error' }
 }
@@ -152,6 +166,42 @@ function Invoke-Helper([string]$who) {
                 $code = $LASTEXITCODE
                 $answer = if (Test-Path $Out) { Get-Content $Out -Raw } else { '' }
                 $usedModel = "$(if ($codexModel) { $codexModel } else { 'default' })/$($cfg.effort)"
+            }
+            'perplexity' {
+                # Perplexity Agent API (pay as you go): live web search with sources. Needs a key: perplexity-key add
+                $key = Get-PerplexityKey
+                if (-not $key) { return @{ ok = $false; reason = 'auth'; detail = 'no Perplexity API key (run: perplexity-key add)' } }
+                $cap = [int]$route.limits.perplexity_daily_cap
+                if ((Get-PplxCount) -ge $cap) { return @{ ok = $false; reason = 'cap'; detail = "daily cap of $cap Perplexity jobs reached" } }
+                $material = Get-Material
+                $inputText = if ($material) { "$prompt`n`n--- MATERIAL ---`n$material" } else { $prompt }
+                $base = if ($cfg.perplexityBaseUrl) { $cfg.perplexityBaseUrl } else { 'https://api.perplexity.ai' }
+                $body = @{ effort = $route.models.perplexity[$Effort]; input = $inputText } | ConvertTo-Json -Depth 5 -Compress
+                Add-PplxCount
+                try {
+                    $res = Invoke-RestMethod -Method Post -Uri "$base/v1/agent" -Headers @{ Authorization = "Bearer $key" } `
+                        -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 240
+                } catch {
+                    $status = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
+                    $msg = "$($_.ErrorDetails.Message)"
+                    $why = if ($status -in 401, 403) { 'auth' }
+                           elseif ($status -eq 402 -or $msg -match 'credit|billing|insufficient|payment') { 'limit' }   # out of credit: top up, then it comes back
+                           elseif ($status -eq 429 -or $status -ge 500 -or $msg -match 'overloaded') { 'busy' }
+                           elseif ($status -eq 404) { 'model_gone' }
+                           else { 'error' }
+                    return @{ ok = $false; reason = $why; detail = "HTTP $status " + $msg.Substring(0, [Math]::Min(150, $msg.Length)) }
+                }
+                $message = @($res.output | Where-Object { $_.type -eq 'message' }) | Select-Object -Last 1
+                $answer = (@($message.content | Where-Object { $_.type -eq 'output_text' }) | ForEach-Object { $_.text }) -join "`n"
+                $sources = @($res.output | Where-Object { $_.type -eq 'search_results' } | ForEach-Object { $_.results })
+                if ($answer.Trim() -and $sources.Count -gt 0) {
+                    $answer += "`n`nSources:`n" + ((@($sources | Select-Object -First 8 | ForEach-Object { "- $($_.title) - $($_.url)" })) -join "`n")
+                }
+                if (-not $answer.Trim()) { return @{ ok = $false; reason = 'error'; detail = 'Perplexity returned no answer text' } }
+                Set-Content $Out $answer
+                $cost = $res.usage.cost.total_cost
+                if ($cost) { Write-Log ("perplexity cost `${0}" -f $cost) }
+                return @{ ok = $true; model = "agent/$Effort" }
             }
             'agy' {
                 $agy = Join-Path $env:LOCALAPPDATA 'agy\bin\agy.exe'
@@ -267,6 +317,8 @@ if ($Mode -eq 'edit' -and $Helper -notin 'auto', 'codex') { Write-Output 'ERROR:
 # The Gemini app cannot see the PC's disk: it joins only for tasks without local files, or with files attached/uploaded, or when named.
 $appOk = $NoDisk -or $DriveFile -or $InputFile -or $Helper -eq 'gemini-app'
 if (-not $appOk) { $chain = @($chain | Where-Object { $_ -ne 'gemini-app' }) }
+# Perplexity cannot see the PC's disk either, and it costs money per request: it joins only when the job needs no local files.
+if (-not ($NoDisk -or $InputFile -or $Helper -eq 'perplexity')) { $chain = @($chain | Where-Object { $_ -ne 'perplexity' }) }
 if ($NoFallback -and $Helper -ne 'auto') { $chain = @($Helper) }
 # Always keep the rest of the helpers as last resorts (read jobs only).
 if ($Mode -ne 'edit' -and -not $NoFallback) { foreach ($h in 'gemini', 'gemini-app', 'codex', 'agy') { if ($h -notin $chain -and $h -notin @($kindInfo.never) -and ($h -ne 'gemini-app' -or $appOk)) { $chain += $h } } }

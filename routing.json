@@ -12,6 +12,11 @@
       "good_at": ["web research with sources", "current events, prices, versions, docs lookup", "huge documents and many files at once", "strong reasoning on big material", "PDFs and images"],
       "weak_at": ["speed (15-75 s per job)", "more than 25 jobs a day (a safety cap, see limits)", "structured output"]
     },
+    "perplexity": {
+      "what": "Perplexity Agent API (pay as you go, no subscription needed): live web search with cited sources, a few cents per question.",
+      "good_at": ["web research with sources", "current events, prices, versions, docs lookup", "fact checking"],
+      "weak_at": ["costs money per request (capped per day)", "cannot see your disk", "not for big files"]
+    },
     "codex": {
       "what": "Codex (ChatGPT login). The only helper allowed to change files.",
       "good_at": ["code edits in 1-5 files", "boilerplate and tests", "image generation ($imagegen)", "tasks that need a sandboxed shell"],
@@ -30,7 +35,7 @@
   },
 
   "kinds": {
-    "web-research": { "chain": ["gemini-app", "codex"], "never": ["gemini"], "effort": "medium", "noDisk": true, "why": "needs live web: the app has Google Search grounding; free Gemini CLI keys hit 429 on Google Search, so no gemini here" },
+    "web-research": { "chain": ["perplexity", "gemini-app", "codex"], "never": ["gemini"], "effort": "medium", "noDisk": true, "why": "needs live web: the app has Google Search grounding; free Gemini CLI keys hit 429 on Google Search, so no gemini here" },
     "big-read":     { "chain": ["gemini-app", "gemini", "agy"], "effort": "medium", "why": "huge input: the app takes the largest files; split into chunks for the CLI keys" },
     "summarize":    { "chain": ["gemini", "gemini-app", "codex", "agy"], "effort": "low", "why": "cheap and simple" },
     "extract":      { "chain": ["gemini", "gemini-app", "codex"], "effort": "low", "why": "mechanical" },
@@ -54,6 +59,12 @@
       "medium": { "model": "flash", "think": "medium" },
       "high": { "model": "pro", "think": "high" }
     },
+    "perplexity": {
+      "_about": "The Agent API effort level: low (everyday questions), medium (multi-hop research), high (hardest). Perplexity chooses the model.",
+      "low": "low",
+      "medium": "medium",
+      "high": "high"
+    },
     "codex": {
       "_about": "An empty model means Codex's own default. effort is Codex's reasoning effort (low, medium, high, xhigh).",
       "low": { "model": "", "effort": "low" },
@@ -67,6 +78,7 @@
     "gemini_app_chunk_kb": 1500,
     "codex_chunk_kb": 200,
     "gemini_app_daily_cap": 25,
+    "perplexity_daily_cap": 40,
     "gemini_cli_timeout_seconds": 240,
     "agy_max_inline_kb": 20,
     "park_hours": { "limit": 5, "busy": 0.25, "model_gone": 24, "auth": 1, "agy_limit": 24, "key_rejected": 24 }

@@ -6,9 +6,10 @@ $script:UserHome = [Environment]::GetFolderPath('UserProfile')
 
 function Get-HubConfig {
     $cfg = @{
-        enabled        = @('claude', 'gemini', 'gemini-app', 'codex', 'agy')   # which AIs the user chose to connect
+        enabled        = @('claude', 'gemini', 'gemini-app', 'perplexity', 'codex', 'agy')   # which AIs the user chose to connect
         geminiKeysFile = Join-Path $script:UserHome '.gemini\api-keys.txt'     # one Gemini API key per line, never inside the hub
         robotProfile   = Join-Path $script:UserHome '.gemini-app-profile'      # the Gemini-app robot's own Chrome profile
+        perplexityKeyFile = Join-Path $script:UserHome '.perplexity\api-key.txt'   # one Perplexity API key, never inside the hub
         sourceRoots    = @()                                                   # folders where project names are looked up (ask-project, fanout -Source <name>)
     }
     $file = Join-Path $script:Hub 'config.json'

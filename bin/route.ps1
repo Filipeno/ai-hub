@@ -77,6 +77,7 @@ else { "pwsh -NoProfile -File `"$hub\bin\ask.ps1`" -Kind $Kind -Effort $Effort -
     models     = [ordered]@{
         gemini       = @($route.models.gemini[$Effort])
         'gemini-app' = $route.models['gemini-app'][$Effort]
+        perplexity   = $route.models.perplexity[$Effort]
         codex        = $route.models.codex[$Effort]
     }
     warning    = $warning
