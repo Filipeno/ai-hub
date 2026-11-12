@@ -171,7 +171,7 @@ try {
   }
   if (!last) throw new Error('no answer before the timeout')
   // Gemini sometimes answers with its own error text; that is a failed job, not an answer.
-  if (last.length < 200 && /something went wrong|try your request again|can't help with that right now|něco se pokazilo|došlo k chybě/i.test(last)) {
+  if (last.length < 200 && /something went wrong|try your request again|encountering an error|try something else for you|can't help with that right now|něco se pokazilo|došlo k chybě/i.test(last)) {
     console.error('APP ERROR: Gemini replied with an error message.')
     code = 7
     throw new Error('app error')
