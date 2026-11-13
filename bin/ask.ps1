@@ -170,7 +170,29 @@ function Invoke-Helper([string]$who) {
             'perplexity' {
                 # Perplexity Agent API (pay as you go): live web search with sources. Needs a key: perplexity-key add
                 $key = Get-PerplexityKey
-                if (-not $key) { return @{ ok = $false; reason = 'auth'; detail = 'no Perplexity API key (run: perplexity-key add)' } }
+                if (-not $key) {
+                    # No API key: use the Perplexity web app through its hidden-Chrome robot (your Perplexity plan). Search mode only.
+                    $robotJs = Join-Path $hub 'perplexity-app\ask.mjs'
+                    if (-not (Test-Path $robotJs)) { return @{ ok = $false; reason = 'auth'; detail = 'no Perplexity API key and no robot (run: perplexity-key add, or perplexity-app login)' } }
+                    $robotLock = [System.Threading.Mutex]::new($false, 'Global\perplexity-app-robot')
+                    try { [void]$robotLock.WaitOne(900000) } catch [System.Threading.AbandonedMutexException] {}
+                    $capApp = [int]$route.limits.perplexity_app_daily_cap
+                    if ((Get-PplxCount) -ge $capApp) { try { $robotLock.ReleaseMutex() } catch {}; return @{ ok = $false; reason = 'cap'; detail = "daily cap of $capApp Perplexity app jobs reached" } }
+                    Add-PplxCount
+                    $appModel = $route.models['perplexity-app'][$Effort]
+                    $appPrompt = $prompt
+                    $robotArgs = @('--timeout', '150', '--model', $appModel, '--out', $Out)
+                    if ($DriveFile) { $robotArgs += '--drive'; $appPrompt = "Use these files from my Google Drive: $($DriveFile -join ', '). $prompt" }
+                    if ($InputFile) { $robotArgs += @('--file', $InputFile) }
+                    try { $text = & node $robotJs @robotArgs --task $appPrompt 2>$err | Out-String; $code = $LASTEXITCODE } finally { try { $robotLock.ReleaseMutex() } catch {} }
+                    $answer = if ($code -eq 0 -and (Test-Path $Out)) { Get-Content $Out -Raw } else { '' }
+                    if ($code -eq 4) { return @{ ok = $false; reason = 'auth'; detail = 'Perplexity robot not signed in (run: perplexity-app login)' } }
+                    if ($code -eq 5) { return @{ ok = $false; reason = 'limit'; detail = 'Perplexity says a usage limit is reached' } }
+                    if ($code -eq 7) { return @{ ok = $false; reason = 'busy'; detail = 'Perplexity answered with an error message' } }
+                    if ($code -eq 0 -and $answer.Trim()) { return @{ ok = $true; model = "app/$appModel" } }
+                    $all = "$text" + (Get-Content $err -Raw)
+                    return @{ ok = $false; reason = (Get-Reason $all); detail = (Get-Detail $all) }
+                }
                 $cap = [int]$route.limits.perplexity_daily_cap
                 if ((Get-PplxCount) -ge $cap) { return @{ ok = $false; reason = 'cap'; detail = "daily cap of $cap Perplexity jobs reached" } }
                 $material = Get-Material
@@ -318,7 +340,7 @@ if ($Mode -eq 'edit' -and $Helper -notin 'auto', 'codex') { Write-Output 'ERROR:
 $appOk = $NoDisk -or $DriveFile -or $InputFile -or $Helper -eq 'gemini-app'
 if (-not $appOk) { $chain = @($chain | Where-Object { $_ -ne 'gemini-app' }) }
 # Perplexity cannot see the PC's disk either, and it costs money per request: it joins only when the job needs no local files.
-if (-not ($NoDisk -or $InputFile -or $Helper -eq 'perplexity')) { $chain = @($chain | Where-Object { $_ -ne 'perplexity' }) }
+if (-not ($NoDisk -or $InputFile -or $DriveFile -or $Helper -eq 'perplexity')) { $chain = @($chain | Where-Object { $_ -ne 'perplexity' }) }
 if ($NoFallback -and $Helper -ne 'auto') { $chain = @($Helper) }
 # Always keep the rest of the helpers as last resorts (read jobs only).
 if ($Mode -ne 'edit' -and -not $NoFallback) { foreach ($h in 'gemini', 'gemini-app', 'codex', 'agy') { if ($h -notin $chain -and $h -notin @($kindInfo.never) -and ($h -ne 'gemini-app' -or $appOk)) { $chain += $h } } }

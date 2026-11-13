@@ -8,9 +8,9 @@
 .PARAMETER AIs
   Skip the question: claude, gemini, gemini-app, codex, agy (comma separated).
 .PARAMETER Yes
-  Answer "yes" to every confirmation (not to the Gemini-app risk notice: that needs -AcceptRobotRisk).
+  Answer "yes" to every confirmation (not to the Gemini-app / Perplexity-robot risk notice: that needs -AcceptRobotRisk).
 .PARAMETER AcceptRobotRisk
-  Confirms you read the Gemini-app risk notice (needed with -Yes when gemini-app is chosen).
+  Confirms you read the browser-robot risk notice (needed with -Yes when gemini-app or the Perplexity robot is chosen).
 .PARAMETER HomeDir
   Use another folder instead of your user profile for ~\.claude, ~\.gemini, ~\.codex (for testing).
 .PARAMETER NoPath
@@ -79,7 +79,7 @@ $catalog = [ordered]@{
     'claude'     = @{ n = 'Claude Code';  d = 'the boss: plans, decides, hands bulk work to the others (needs Claude Code installed)' }
     'gemini'     = @{ n = 'Gemini CLI';   d = 'free Gemini API keys: fast, cheap helper for summaries, extraction, small questions' }
     'gemini-app' = @{ n = 'Gemini web app (browser robot)'; d = 'uses your Google AI plan: live Google Search, huge files, strongest Gemini models  [automation, read the risk notice]' }
-    'perplexity' = @{ n = 'Perplexity (API)'; d = 'pay-as-you-go API key: live web search with cited sources, a few cents per question (daily cap built in)' }
+    'perplexity' = @{ n = 'Perplexity (API key or plan robot)'; d = 'live web search with cited sources: a pay-as-you-go API key (a few cents per question) or your Perplexity plan through a browser robot  [robot = automation, read the risk notice]' }
     'codex'      = @{ n = 'Codex';        d = 'ChatGPT login: the only helper that edits files; code edits, tests, images' }
     'agy'        = @{ n = 'Antigravity CLI (agy)'; d = 'Google login: small weekly quota, last-resort helper' }
 }
@@ -92,7 +92,7 @@ if (-not $AIs) {
         $found = switch ($k) { 'claude' { Test-Command 'claude' } 'gemini' { Test-Command 'gemini' } 'codex' { Test-Command 'codex' } 'agy' { Test-Agy } 'gemini-app' { [bool](Find-Chrome) } 'perplexity' { (Test-Path (Join-Path $UserHome '.perplexity\api-key.txt')) -or [bool][Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User') } }
         $tag = if ($found) { '(found on this PC)' } else { '(not installed yet; I can install it)' }
         if ($k -eq 'gemini-app') { $tag = if (Find-Chrome) { '(Chrome found)' } else { '(needs Chrome or Edge)' } }
-        if ($k -eq 'perplexity') { $tag = if ($found) { '(key found)' } else { '(needs an API key from console.perplexity.ai)' } }
+        if ($k -eq 'perplexity') { $tag = if ($found) { '(key found)' } elseif (Find-Chrome) { '(needs an API key, or a Perplexity plan + Chrome for the robot)' } else { '(needs an API key from console.perplexity.ai)' } }
         if ($k -eq 'claude' -and -not $found) { $tag = '(not installed; get it from https://claude.com/claude-code)' }
         Write-Host ('  {0}. {1,-34} {2}' -f $i, $catalog[$k].n, $tag) -ForegroundColor White
         Write-Host ('     {0}' -f $catalog[$k].d) -ForegroundColor DarkGray
@@ -189,14 +189,32 @@ foreach ($ai in $AIs) {
             $connected.Add('gemini-app')
         }
         'perplexity' {
-            Say 'Perplexity is used through its API: pay as you go (a few cents per question), no subscription needed. Create a key at https://console.perplexity.ai/project/keys and set a spending limit there.'
-            Say 'The tool also stops after 40 Perplexity jobs a day (routing.json -> limits.perplexity_daily_cap).'
+            Say 'Perplexity can be used in two ways: (1) its API, pay as you go (a few cents per question; key from https://console.perplexity.ai/project/keys, set a spending limit there), or (2) your own Perplexity plan through a hidden-Chrome robot (no per-question cost; Search mode only).'
+            Say 'The tool stops after 40 API jobs or 30 robot jobs a day (routing.json -> limits.perplexity_daily_cap / perplexity_app_daily_cap).'
             $pk = Join-Path $UserHome '.perplexity\api-key.txt'
-            if (-not (Test-Path $pk) -and -not [Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User')) {
-                if ($Yes) { Say 'Skipped: the key needs hidden typing. Run later:  perplexity-key add' 'Yellow' }
-                elseif (Confirm-Step 'Add your Perplexity API key now? (hidden input; stored only in your user profile)') { & (Join-Path $Hub 'bin\perplexity-key.ps1') add }
+            $haveKey = (Test-Path $pk) -or [Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User')
+            if (-not $haveKey -and -not $Yes -and (Confirm-Step 'Add a Perplexity API key now? (hidden input; stored only in your user profile)')) {
+                & (Join-Path $Hub 'bin\perplexity-key.ps1') add
+                $haveKey = (Test-Path $pk) -or [Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User')
             }
-            if (-not ((Test-Path $pk) -or [Environment]::GetEnvironmentVariable('PERPLEXITY_API_KEY', 'User'))) { $notes.Add('Add your Perplexity API key:  perplexity-key add') }
+            if ($haveKey) { Say 'A Perplexity API key is saved, so the API is used (the robot is only used when there is no key).' 'Green' }
+            else {
+                Say 'RISK NOTICE for the Perplexity robot - please read:' 'Yellow'
+                Say '  The robot drives perplexity.ai with a hidden, automated Chrome that is signed in to YOUR Perplexity account.'
+                Say '  Perplexity may treat automated use of the web app as a terms-of-service violation and could limit or close the account.'
+                Say '  Use an account you can afford to lose. The robot only uses the normal Search mode, never accepts pop-ups or permissions,'
+                Say '  and caps itself at 30 jobs a day. Its login is kept in a separate Chrome profile in your user folder.'
+                if ($Yes) { $ok = [bool]$AcceptRobotRisk } else { $ok = ((Read-Host 'Type  I understand  to set up the Perplexity robot, or press Enter to skip it') -eq 'I understand') }
+                if (-not $ok) { Say 'Skipping the Perplexity robot.' 'Yellow'; $notes.Add('Perplexity needs an API key (perplexity-key add) or the robot (re-run install.ps1).'); break }
+                if (-not (Find-Chrome)) { Say 'Chrome or Edge not found; install Chrome and run this installer again.' 'Yellow'; $notes.Add('Install Chrome, then re-run install.ps1 for the Perplexity robot.'); break }
+                Say 'Installing the robot''s one dependency (playwright-core, from npm; it does not download a browser)...'
+                Push-Location (Join-Path $Hub 'perplexity-app')
+                try { npm install --no-audit --no-fund 2>&1 | Select-Object -Last 1 | ForEach-Object { Say "  $_" } } finally { Pop-Location }
+                if (Confirm-Step 'Open the sign-in window now? You sign in to Perplexity in it, then CLOSE it.') {
+                    & node (Join-Path $Hub 'perplexity-app\login.mjs')
+                    if (-not $Yes) { Read-Host 'Press Enter here after you signed in and closed that Chrome window' | Out-Null }
+                } else { $notes.Add('Sign the Perplexity robot in:  perplexity-app login') }
+            }
             $connected.Add('perplexity')
         }
         'codex' {

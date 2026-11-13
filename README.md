@@ -13,7 +13,7 @@ It is a set of PowerShell scripts plus a small browser robot and a skill for Cla
 | **Claude Code** (boss) | Claude Code installed | plans, decides, checks the helpers' work |
 | **Gemini CLI** | free API key(s) from [AI Studio](https://aistudio.google.com/apikey) | fast, cheap: summaries, extraction, small questions. Quota is per model per key, so several keys = more quota |
 | **Gemini web app** (browser robot) | a Google account with a Gemini plan, Chrome, Node.js | live Google Search, huge files, the strongest Gemini models. **Automation: read the risk section.** |
-| **Perplexity** (API) | an API key from the [Perplexity console](https://console.perplexity.ai/project/keys); pay as you go, a few cents per question, no subscription needed | live web research with cited sources (a daily cap protects your bill) |
+| **Perplexity** (API or robot) | either an API key from the [Perplexity console](https://console.perplexity.ai/project/keys) (pay as you go, a few cents per question), or a Perplexity plan + Chrome + Node.js for the browser robot (no per-question cost) | live web research with cited sources; with the robot also reading your Google Drive files through Perplexity's Drive plugin. **The robot is automation: read the risk section.** |
 | **Codex** | ChatGPT login | the only helper that edits files: code edits, tests, images |
 | **Antigravity CLI** (`agy`) | Google login | small weekly quota; last-resort helper |
 
@@ -65,6 +65,7 @@ council.ps1 -Task "Is a 15 s polling interval a sound design?" -Out files\counci
 limits                # which helpers are parked (out of quota) and the last jobs
 gemini-keys add|list|remove|test|models     # manage your Gemini API keys (hidden input)
 perplexity-key add|test|remove|status      # your Perplexity API key and today's job count
+perplexity-app login                       # one-time sign-in for the Perplexity browser robot (no API key needed)
 codex-chats           # the jobs Codex ran for you (the Codex app does not show them)
 ai codex | ai gemini  # open a helper as the fallback boss when Claude is out of usage
 ```
@@ -92,7 +93,8 @@ The robot drives `gemini.google.com` with a hidden Chrome that is signed in to *
 ## Privacy and safety
 
 - Your **Gemini API keys** are stored in `~\.gemini\api-keys.txt` (readable only by your Windows user), never inside the hub folder, and are never printed or logged.
-- **Perplexity costs money per request** (typically a few cents). Set a spending limit in the Perplexity console; the tools also stop after 40 Perplexity jobs a day (outing.json -> limits.perplexity_daily_cap). Your key lives in `~\.perplexity\api-key.txt`, never in the hub. Pro-subscriber API credit: I could not confirm it from Perplexity's docs, so check your billing page.
+- **Perplexity robot (browser automation):** it drives perplexity.ai with a hidden Chrome signed in to your account, in the normal Search mode only. Perplexity may treat automation of the web app as a terms-of-service violation; use an account you can afford to lose. The installer makes you type `I understand` first; the robot caps itself at 30 jobs a day (`limits.perplexity_app_daily_cap`) and is used only when no API key is saved. Its login lives in `~\.perplexity-app-profile`, outside the hub.
+- **Perplexity API costs money per request** (typically a few cents). Set a spending limit in the Perplexity console; the tools also stop after 40 Perplexity jobs a day (outing.json -> limits.perplexity_daily_cap). Your key lives in `~\.perplexity\api-key.txt`, never in the hub. Pro-subscriber API credit: I could not confirm it from Perplexity's docs, so check your billing page.
 - Free Gemini tiers may use your prompts to improve Google's models. Do not send secrets or private personal files. `fanout.ps1` and `ask-project.ps1` skip files that look like secrets (by name and by content), dependencies, build output and git data, but no filter is perfect: look at what you send.
 - Helpers are told never to commit, push, publish or delete. Only Codex is given write access, and only inside the folder of the job.
 - The tools never read or change anything outside the hub, your tool instruction files (with backup) and the folders you point them at.
@@ -114,7 +116,7 @@ The robot drives `gemini.google.com` with a hidden Chrome that is signed in to *
 ```
 install.ps1 / uninstall.ps1   setup and undo
 routing.json                  who is good at what, models per effort, limits (edit me)
-bin\                          ask, route, fanout, council, ask-project, limits, gemini-keys, perplexity-key, codex-chats, ai (+ .cmd shims)
+bin\                          ask, route, fanout, council, ask-project, limits, gemini-keys, perplexity-key, perplexity-app, codex-chats, ai (+ .cmd shims)
 bin\lib\                      shared code (hub location, config, safe file collection)
 gemini-app\                   the browser robot (Node, playwright-core)
 templates\                    what the installer copies into your tool instruction files and the hub
