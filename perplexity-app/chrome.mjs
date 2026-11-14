@@ -54,7 +54,9 @@ export const startChrome = async ({ visible }) => {
     `--user-data-dir=${PROFILE}`,
     '--no-first-run',
     '--no-default-browser-check',
-    ...(visible ? [APP] : ['--headless=new', '--disable-gpu', '--window-size=1280,900', '--lang=en-US', 'about:blank']),
+    // Not headless: since 2026-11-14 perplexity.ai locks up its own page within ~30 s in headless Chrome (fine in a real window).
+    // So jobs use a real window parked off-screen (only a taskbar icon shows), kept un-throttled while out of sight.
+    ...(visible ? [APP] : ['--window-position=-32000,-32000', '--window-size=1280,900', '--lang=en-US', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling', 'about:blank']),
   ]
   spawn(CHROME, args, { detached: true, stdio: 'ignore' }).unref()
   for (let i = 0; i < 40; i++) {

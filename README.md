@@ -90,11 +90,21 @@ The robot drives `gemini.google.com` with a hidden Chrome that is signed in to *
 - Each job leaves a chat in your Gemini history; delete them when you like.
 - The installer makes you type `I understand` before it sets this up. You can leave it out and still use the rest.
 
+## Self-test (keeps it working when websites change)
+Google and Perplexity change their web pages and models without warning. To notice that early:
+- Run `selftest` (or `selftest -Quick` to skip the two browser robots). It sends one tiny job to each AI you connected, checks the router, and compares the Gemini model lists with the last run. No Claude usage.
+- Make it daily (optional), in your own terminal:
+  `schtasks /create /tn "AI hub self-test" /sc daily /st 12:00 /tr "pwsh -NoProfile -WindowStyle Hidden -File <hub>\bin\selftest.ps1"`
+- Problems land in `inbox\claude\` (Claude sees them at the next session start) and in `files\selftest\<date>.md`.
+- When a robot fails it saves a screenshot and a list of the page's buttons in `files\robot-failures\`. Give that folder to Claude: it is usually a 5-minute fix.
+- Both robots close tips and pop-ups by themselves (only close-type buttons; never Upgrade, Accept or Allow).
+
 ## Privacy and safety
 
 - Your **Gemini API keys** are stored in `~\.gemini\api-keys.txt` (readable only by your Windows user), never inside the hub folder, and are never printed or logged.
 - **Perplexity robot (browser automation):** it drives perplexity.ai with a hidden Chrome signed in to your account, in the normal Search mode only. Perplexity may treat automation of the web app as a terms-of-service violation; use an account you can afford to lose. The installer makes you type `I understand` first; the robot caps itself at 30 jobs a day (`limits.perplexity_app_daily_cap`) and is used only when no API key is saved. Its login lives in `~\.perplexity-app-profile`, outside the hub.
-- **Perplexity API costs money per request** (typically a few cents). Set a spending limit in the Perplexity console; the tools also stop after 40 Perplexity jobs a day (outing.json -> limits.perplexity_daily_cap). Your key lives in `~\.perplexity\api-key.txt`, never in the hub. Pro-subscriber API credit: I could not confirm it from Perplexity's docs, so check your billing page.
+- **Perplexity API costs money per request** (typically a few cents). Set a spending limit in the Perplexity console; the tools also stop after 40 Perplexity jobs a day (
+outing.json -> limits.perplexity_daily_cap). Your key lives in `~\.perplexity\api-key.txt`, never in the hub. Pro-subscriber API credit: I could not confirm it from Perplexity's docs, so check your billing page.
 - Free Gemini tiers may use your prompts to improve Google's models. Do not send secrets or private personal files. `fanout.ps1` and `ask-project.ps1` skip files that look like secrets (by name and by content), dependencies, build output and git data, but no filter is perfect: look at what you send.
 - Helpers are told never to commit, push, publish or delete. Only Codex is given write access, and only inside the folder of the job.
 - The tools never read or change anything outside the hub, your tool instruction files (with backup) and the folders you point them at.

@@ -9,6 +9,7 @@
 import { mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { HUB, connect, startChrome, stopChrome, useNormalUserAgent, APP } from './chrome.mjs'
+import { closePopups, saveFailure } from '../robot-common/robot-util.mjs'
 
 const arg = name => {
   const i = process.argv.indexOf(`--${name}`)
@@ -52,6 +53,7 @@ try {
     throw new Error('not signed in')
   }
 
+  await closePopups(page) // shared closer: tips, banners, dialogs (never clicks Upgrade/Accept)
   // Dismiss pop-ups that cover the page (location, tips): Escape first, then a Close button. Never accept or allow anything.
   for (let i = 0; i < 3; i++) {
     if ((await page.locator('.cdk-overlay-container [role="dialog"], .cdk-overlay-container mat-dialog-container').count()) === 0) break
@@ -202,7 +204,8 @@ try {
   console.log(`OK out=${out}`)
   code = 0
 } catch (e) {
-  if (code === 3) console.error(`FAILED: ${e.message}`)
+  if (code === 3) console.error(`FAILED: ${String(e.message).split('\n')[0]}`)
+  if (code === 3) await saveFailure(page, 'gemini-app', 'see error', e)
   try {
     mkdirSync(dirname(SHOT), { recursive: true })
     await page?.screenshot({ path: SHOT })

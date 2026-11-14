@@ -92,7 +92,7 @@
   },
 
   "triggers": {
-    "web": "latest|current|today|recent|news|price|prices|release|version|changelog|search the web|look up|online|documentation|docs for|who is|when did|2026|2027",
+    "web": "latest|newest|current|today|recent|news|research|what.?s new|this (week|month|year)|nowadays|price|prices|release|version|changelog|search the web|look up|online|documentation|docs for|who is|when did|202[6-9]",
     "edit": "edit|change|rename|refactor|implement|fix|add a|create a file|write a script|apply|patch|rewrite",
     "image": "generate an? image|concept image|illustration|picture of|logo|\\$imagegen",
     "summarize": "summari[sz]e|tl;?dr|overview|brief me|key points",

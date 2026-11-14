@@ -12,6 +12,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { HUB, connect, startChrome, stopChrome, useNormalUserAgent, APP } from './chrome.mjs'
+import { closePopups, saveFailure } from '../robot-common/robot-util.mjs'
 
 const arg = name => {
   const i = process.argv.indexOf(`--${name}`)
@@ -71,6 +72,7 @@ try {
     throw new Error('not signed in')
   }
   await page.keyboard.press('Escape') // closes any pop-up; nothing is ever accepted
+  await closePopups(page) // shared closer: tips, banners, dialogs (never clicks Upgrade/Accept)
   // Feature tips ("The Computer tab has moved...", 2026-11-14) sit over the composer's buttons and ignore Escape: click their X.
   for (let i = 0; i < 3; i++) {
     const x = page.getByRole('button', { name: /^(close|dismiss|got it|not now)$/i }).first()
@@ -245,6 +247,7 @@ try {
 } catch (e) {
   // One line, so the job log shows the cause and not Playwright's multi-line call log.
   if (code === 3) console.error(`FAILED: ${String(e.message).split('\n')[0]} (step: ${lastStep})`)
+  if (code === 3) await saveFailure(page, 'perplexity-app', lastStep, e)
   try {
     mkdirSync(dirname(SHOT), { recursive: true })
     // Bounded: a frozen page must not hang the job's exit.
