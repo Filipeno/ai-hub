@@ -71,6 +71,13 @@ try {
     throw new Error('not signed in')
   }
   await page.keyboard.press('Escape') // closes any pop-up; nothing is ever accepted
+  // Feature tips ("The Computer tab has moved...", 2026-11-14) sit over the composer's buttons and ignore Escape: click their X.
+  for (let i = 0; i < 3; i++) {
+    const x = page.getByRole('button', { name: /^(close|dismiss|got it|not now)$/i }).first()
+    if (!(await x.isVisible().catch(() => false))) break
+    await x.click({ timeout: 3000 }).catch(() => {})
+    await sleep(600)
+  }
 
   // Search mode, always. The page remembers the last mode and may open in Computer mode.
   const searchToggle = page.getByRole('button', { name: 'Search', exact: true }).first()
