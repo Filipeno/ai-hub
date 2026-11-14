@@ -73,18 +73,37 @@ try {
   if (modelArg in MODEL_INDEX) {
     await openPicker()
     await radios.nth(MODEL_INDEX[modelArg]).click()
-    await sleep(900)
+    await sleep(1500)
+    // A model the plan does not include opens an "Upgrade / Not now" dialog (4 Argon on Plus since 2026-11-14).
+    // Close it and use the everyday model instead.
+    const upsell = page.locator('[role="dialog"], mat-dialog-container').first()
+    if (await upsell.isVisible().catch(() => false)) {
+      const notNow = upsell.locator('button').filter({ hasText: /not now|no thanks|close|teď ne|zavřít/i }).first()
+      if (await notNow.isVisible().catch(() => false)) await notNow.click(); else await page.keyboard.press('Escape')
+      await sleep(800)
+      console.error(`NOTE: model "${modelArg}" is locked on this plan; using flash instead`)
+      await openPicker()
+      await radios.nth(MODEL_INDEX.flash).click()
+      await sleep(900)
+    }
   }
   if (thinkArg in LEVEL_INDEX) {
     await openPicker()
-    const trigger = page.locator('[role="menuitem"]').first() // "Thinking level" opens the sub-menu
-    if (await trigger.isVisible().catch(() => false)) {
-      await trigger.click()
-      await sleep(800)
-      const n = await radios.count()
-      if (n >= 3) await radios.nth(n - 3 + LEVEL_INDEX[thinkArg]).click() // the last three radios are the levels
-      await sleep(700)
+    // "Thinking level" opens a sub-menu with the three level radios. Its place in the menu moves (first before 2026-11, last since),
+    // so take the visible menu item that is not a model radio. Flash-Lite has no levels: then no such item is visible.
+    const triggers = page.locator('[role="menuitem"]')
+    for (let i = (await triggers.count()) - 1; i >= 0; i--) {
+      if (await triggers.nth(i).isVisible().catch(() => false)) {
+        await triggers.nth(i).click()
+        await sleep(800)
+        break
+      }
     }
+    const n = await radios.count()
+    const level = n >= 3 ? radios.nth(n - 3 + LEVEL_INDEX[thinkArg]) : null // the last three radios are the levels
+    // Some models (Flash-Lite) have no thinking levels: the level items are then hidden, so skip instead of failing.
+    if (level && await level.isVisible().catch(() => false)) await level.click()
+    await sleep(700)
     await page.keyboard.press('Escape')
     await sleep(400)
   }

@@ -57,7 +57,7 @@
       "_about": "lite / flash / pro = the 1st / 2nd / 3rd entry of the app's model menu; think = the thinking level.",
       "low": { "model": "lite", "think": "low" },
       "medium": { "model": "flash", "think": "medium" },
-      "high": { "model": "pro", "think": "high" }
+      "high": { "model": "flash", "think": "high" }
     },
     "perplexity-app": {
       "_about": "Model for the Perplexity web robot, by name as in its Model menu (Best = Perplexity decides). The choice sticks in the profile, so every job sets it. Models your plan locks are skipped.",
