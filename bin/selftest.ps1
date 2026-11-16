@@ -14,6 +14,8 @@ $tmp = Join-Path $work 'tmp'
 New-Item -ItemType Directory -Force $tmp | Out-Null
 $stamp = Get-Date -Format 'yyyy-MM-dd'
 $results = [ordered]@{}
+$probe = Join-Path $tmp 'upload-probe.txt'
+Set-Content $probe 'The answer word is: ok'   # browser robots must read this attached file, so a broken upload is caught
 $notes = New-Object System.Collections.Generic.List[string]
 
 # Text from web pages and helper output is untrusted: keep it short, single-line and to a safe character set.
@@ -23,7 +25,7 @@ function Test-Helper([string]$name, [hashtable]$extra = @{}) {
     $out = Join-Path $tmp "$name.md"
     Remove-Item $out -ErrorAction SilentlyContinue
     $t = Get-Date
-    $log = & (Join-Path $PSScriptRoot 'ask.ps1') -Helper $name -NoFallback -Effort low -Dir $tmp -Out $out -Task 'Reply with just the word: ok' @extra 2>&1 | Out-String
+    $log = & (Join-Path $PSScriptRoot 'ask.ps1') -Helper $name -NoFallback -Effort low -Dir $tmp -Out $out -Task $(if ($extra.InputFile) { 'Reply with just the answer word from the attached file.' } else { 'Reply with just the word: ok' }) @extra 2>&1 | Out-String
     $secs = [int]((Get-Date) - $t).TotalSeconds
     $answer = if (Test-Path $out) { (Get-Content $out -Raw).Trim() } else { '' }
     $ok = $answer -match '\bok\b'
@@ -35,8 +37,8 @@ function Test-Helper([string]$name, [hashtable]$extra = @{}) {
 if (On 'gemini') { Test-Helper 'gemini' }
 if (On 'codex') { Test-Helper 'codex' }
 if (-not $Quick) {
-    if (On 'gemini-app') { Test-Helper 'gemini-app' @{ NoDisk = $true } }
-    if (On 'perplexity') { Test-Helper 'perplexity' @{ NoDisk = $true } }
+    if (On 'gemini-app') { Test-Helper 'gemini-app' @{ NoDisk = $true; InputFile = $probe } }
+    if (On 'perplexity') { Test-Helper 'perplexity' @{ NoDisk = $true; InputFile = $probe } }
 }
 # A helper can fail for a minute (PC just woke, network, another session editing hub scripts): retest failures once before reporting.
 $retry = @($results.Keys | Where-Object { -not $results[$_].ok })
@@ -44,7 +46,7 @@ if ($retry) {
     Start-Sleep -Seconds 90
     foreach ($n in $retry) {
         $first = $results[$n].detail
-        if ($n -in 'gemini-app', 'perplexity') { Test-Helper $n @{ NoDisk = $true } } else { Test-Helper $n }
+        if ($n -in 'gemini-app', 'perplexity') { Test-Helper $n @{ NoDisk = $true; InputFile = $probe } } else { Test-Helper $n }
         if ($results[$n].ok) { $notes.Add("$n failed once, then worked on the retry 90 s later: $first") }
     }
 }

@@ -9,7 +9,7 @@
 import { mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { HUB, connect, startChrome, stopChrome, useNormalUserAgent, APP } from './chrome.mjs'
-import { closePopups, saveFailure } from '../robot-common/robot-util.mjs'
+import { closePopups, gotoWithRetry, saveFailure } from '../robot-common/robot-util.mjs'
 
 const arg = name => {
   const i = process.argv.indexOf(`--${name}`)
@@ -43,7 +43,7 @@ try {
   page = await context.newPage()
   await useNormalUserAgent(context, page)
   await page.setViewportSize({ width: 1280, height: 900 })
-  await page.goto(APP, { waitUntil: 'domcontentloaded' })
+  await gotoWithRetry(page, APP)
   await sleep(3000)
   const composerSel = 'div.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"], [role="textbox"]'
   const signedOut = page.url().includes('accounts.google.com') || (await page.locator('a[href*="accounts.google.com/ServiceLogin"]').count()) > 0
@@ -125,12 +125,17 @@ try {
     await buttons.nth(best.i).click()
     await sleep(900)
   }
-  const menuItems = page.locator('[role="menuitem"]')
+  const menuItems = page.locator('[role="menuitem"]:visible')
+  // Upload menu entries by their stable test ids; position is only the fallback (hidden menu items from the mode picker stay in the DOM).
+  const uploadEntry = async (testId, index) => {
+    const byId = page.locator(`[data-test-id="${testId}"]:visible`).first()
+    return (await byId.count()) ? byId : menuItems.nth(index)
+  }
 
   // Attach files from Google Drive through Gemini's own picker (2nd entry of the upload menu).
   for (const name of driveFiles) {
     await openPlusMenu()
-    await menuItems.nth(1).click()
+    await (await uploadEntry('uploader-drive-button', 1)).click()
     const frame = page.frameLocator('iframe[src*="docs.google.com/picker"]')
     const search = frame.locator('input:visible:enabled').first()
     await search.waitFor({ state: 'visible', timeout: 30000 })
@@ -150,8 +155,14 @@ try {
   // Upload local files straight from the PC (1st entry of the upload menu), no Drive sync delay.
   for (const path of localFiles) {
     await openPlusMenu()
-    const [chooser] = await Promise.all([page.waitForEvent('filechooser', { timeout: 20000 }), menuItems.nth(0).click()])
-    await chooser.setFiles(path)
+    const entry = await uploadEntry('local-images-files-uploader-button', 0)
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser', { timeout: 15000 }).catch(() => null), entry.click()])
+    if (chooser) await chooser.setFiles(path)
+    else {
+      // No file dialog event: feed the page's own file input instead.
+      await page.keyboard.press('Escape')
+      await page.locator('input[type="file"]').last().setInputFiles(path)
+    }
     await sleep(4000 + Math.ceil(statSync(path).size / 1048576) * 2500)
   }
 
@@ -164,31 +175,37 @@ try {
   await page.keyboard.press('Enter')
 
   // Wait for a new response to appear, then for its text to stop changing.
-  const deadline = Date.now() + timeoutMs
   let last = ''
   let stable = 0
-  let noAnswerPolls = 0
-  while (Date.now() < deadline) {
-    await sleep(1500)
-    const count = await page.locator('model-response').count()
-    if (count <= before) {
-      // No answer yet. Only after about 10 s of nothing do we look for a limit message (the page also shows your own prompt).
-      noAnswerPolls++
-      const body = noAnswerPolls >= 7 ? await page.locator('body').innerText().catch(() => '') : ''
-      if (body && LIMIT_RX.test(body)) {
-        console.error('LIMIT: the Gemini app says the usage limit is reached.')
-        code = 5
-        throw new Error('limit')
+  for (let answerTry = 0; answerTry < 2 && !last; answerTry++) {
+    const deadline = Date.now() + timeoutMs
+    let noAnswerPolls = 0
+    while (Date.now() < deadline) {
+      await sleep(1500)
+      const count = await page.locator('model-response').count()
+      if (count <= before) {
+        // No answer yet. Only after about 10 s of nothing do we look for a limit message (the page also shows your own prompt).
+        noAnswerPolls++
+        const body = noAnswerPolls >= 7 ? await page.locator('body').innerText().catch(() => '') : ''
+        if (body && LIMIT_RX.test(body)) {
+          console.error('LIMIT: the Gemini app says the usage limit is reached.')
+          code = 5
+          throw new Error('limit')
+        }
+        continue
       }
-      continue
+      // The answer text lives in .model-response-text. It is done when the answer's action buttons (copy, good/bad response, ...)
+      // have appeared: at least three buttons inside the last response. (.processing-state-visible never clears.)
+      const text = (await page.locator('model-response .model-response-text').last().innerText().catch(() => '')).trim()
+      const done = (await page.locator('model-response').last().locator('button').count()) >= 3
+      stable = text && text === last && done ? stable + 1 : 0
+      last = text
+      if (stable >= 2) break
     }
-    // The answer text lives in .model-response-text. It is done when the answer's action buttons (copy, good/bad response, ...)
-    // have appeared: at least three buttons inside the last response. (.processing-state-visible never clears.)
-    const text = (await page.locator('model-response .model-response-text').last().innerText().catch(() => '')).trim()
-    const done = (await page.locator('model-response').last().locator('button').count()) >= 3
-    stable = text && text === last && done ? stable + 1 : 0
-    last = text
-    if (stable >= 2) break
+    if (!last && answerTry === 0) {
+      console.error('RETRY: no answer before timeout; reloading once')
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {})
+    }
   }
   if (!last) throw new Error('no answer before the timeout')
   // Gemini sometimes answers with its own error text; that is a failed job, not an answer.
