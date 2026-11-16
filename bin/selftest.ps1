@@ -38,6 +38,16 @@ if (-not $Quick) {
     if (On 'gemini-app') { Test-Helper 'gemini-app' @{ NoDisk = $true } }
     if (On 'perplexity') { Test-Helper 'perplexity' @{ NoDisk = $true } }
 }
+# A helper can fail for a minute (PC just woke, network, another session editing hub scripts): retest failures once before reporting.
+$retry = @($results.Keys | Where-Object { -not $results[$_].ok })
+if ($retry) {
+    Start-Sleep -Seconds 90
+    foreach ($n in $retry) {
+        $first = $results[$n].detail
+        if ($n -in 'gemini-app', 'perplexity') { Test-Helper $n @{ NoDisk = $true } } else { Test-Helper $n }
+        if ($results[$n].ok) { $notes.Add("$n failed once, then worked on the retry 90 s later: $first") }
+    }
+}
 # agy has ~10 min of quota per week: only check that it starts.
 if (On 'agy') {
 $agy = (agy --version 2>&1 | Select-Object -First 1) -as [string]
