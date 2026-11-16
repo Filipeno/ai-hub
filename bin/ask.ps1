@@ -144,26 +144,70 @@ function Get-PplxCount {
 function Add-PplxCount { @{ date = (Get-Date).ToString('yyyy-MM-dd'); count = (Get-PplxCount) + 1 } | ConvertTo-Json | Set-Content $pplxCountFile }
 
 function Get-Reason([string]$all) {
+    # Codex echoes the whole conversation to stderr, so a task that only mentions "rate limit" or "quota" looked like a
+    # limit hit. When the log has real error lines, classify by those alone; a transcript without any is a plain error.
+    $errLines = @($all -split "`n" | Where-Object { $_ -match '^\s*(ERROR|Error:|error:|fatal)' -or $_ -match 'temporarily unavailable' })
+    if ($errLines) { $all = $errLines -join "`n" } elseif ($all -match 'tokens used') { return 'error' }
     if ($all -match $busyRx) { 'busy' } elseif ($all -match $limitRx) { 'limit' } elseif ($all -match $goneRx) { 'model_gone' } elseif ($all -match $authRx) { 'auth' } else { 'error' }
 }
 function Get-Detail([string]$all) { ($all.Trim() -split "`n" | Select-Object -Last 2) -join ' ' }
 function Get-Material { if ($InputFile) { Get-Content $InputFile -Raw } else { $null } }
 
 # Returns @{ ok; reason; detail; model } for one helper. On ok the answer is in $Out.
+# --ignore-user-config drops the user's Codex config, including the Windows sandbox choice: carry that one setting over.
+function Get-CodexSandboxArgs {
+    $toml = Join-Path ($env:CODEX_HOME ?? (Join-Path $HOME '.codex')) 'config.toml'
+    if ((Test-Path $toml) -and ((Get-Content $toml -Raw) -match '(?ms)^\[windows\][^\[]*?^\s*sandbox\s*=\s*"([^"]+)"')) { return @('-c', "windows.sandbox=`"$($Matches[1])`"") }
+    return @()
+}
+function Invoke-CodexWatched($cargs, [string]$prompt, [string]$material) {
+    $idleMax = [int]($route.limits.codex_idle_seconds ?? 240)
+    $hardMax = [int]($route.limits.codex_timeout_seconds ?? 1800)
+    $job = Start-Job -ArgumentList (, $cargs), $prompt, $material, $err -ScriptBlock {
+        param($cargs, $prompt, $material, $err)
+        $cargs = @($cargs | ForEach-Object { $_ })   # the job hands the list over nested one level deep
+        if ($material) { $null = ("$prompt`n`n--- MATERIAL ---`n$material") | & codex @cargs - 2>$err }
+        else { $null = & codex @cargs $prompt 2>$err }
+        $LASTEXITCODE
+    }
+    $start = Get-Date; $lastChange = $start; $lastCpu = -1.0; $lastLog = -1L
+    $outMark = [regex]::Escape($Out)
+    while (-not (Wait-Job $job -Timeout 15)) {
+        $procs = @(Get-CimInstance Win32_Process -Filter "Name='codex.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match $outMark })
+        $ids = @($procs.ProcessId)
+        $kids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ParentProcessId -in $ids })
+        $cpu = 0.0; foreach ($p in @($procs) + $kids) { $cpu += ((Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue).TotalProcessorTime.TotalSeconds ?? 0) }
+        $log = if (Test-Path $err) { (Get-Item $err).Length } else { 0 }
+        if ([math]::Abs($cpu - $lastCpu) -gt 0.3 -or $log -ne $lastLog) { $lastChange = Get-Date; $lastCpu = $cpu; $lastLog = $log }
+        $idle = ((Get-Date) - $lastChange).TotalSeconds; $total = ((Get-Date) - $start).TotalSeconds
+        if ($idle -ge $idleMax -or $total -ge $hardMax) {
+            foreach ($id in $ids) { taskkill /T /F /PID $id 2>&1 | Out-Null }
+            Stop-Job $job; Remove-Job $job -Force
+            $why = if ($idle -ge $idleMax) { "hung: no progress for $([int]$idle) s" } else { "timed out after $([int]$total) s" }
+            Add-Content $err "temporarily unavailable: codex $why (killed by the hub watchdog)"
+            Write-Log "codex $why, killed"
+            return 124
+        }
+    }
+    $code = Receive-Job $job | Select-Object -Last 1
+    Remove-Job $job -Force
+    return [int]($code ?? 1)
+}
+
 function Invoke-Helper([string]$who) {
     $err = New-TemporaryFile
     try {
         switch ($who) {
             'codex' {
                 $cfg = $route.models.codex[$Effort]
-                $cargs = @('exec', '--skip-git-repo-check', '-s', $(if ($Mode -eq 'edit') { 'workspace-write' } else { 'read-only' }), '-C', $Dir, '-o', $Out,
+                # --ignore-user-config: hub jobs need none of the Codex app's MCP servers, plugins or hooks (servers that need a login fail
+                # with AuthRequired, local ones try to connect). The login itself still comes from CODEX_HOME.
+                $cargs = @('exec', '--ignore-user-config') + (Get-CodexSandboxArgs) + @('--skip-git-repo-check', '-s', $(if ($Mode -eq 'edit') { 'workspace-write' } else { 'read-only' }), '-C', $Dir, '-o', $Out,
                     '-c', "model_reasoning_effort=$($cfg.effort)")
                 $codexModel = if ($Model) { $Model } else { $cfg.model }
                 if ($codexModel) { $cargs += @('-m', $codexModel) }   # empty = Codex's own default model
                 $material = Get-Material
-                if ($material) { $text = ("$prompt`n`n--- MATERIAL ---`n$material") | & codex @cargs - 2>$err | Out-String }
-                else { $text = & codex @cargs $prompt 2>$err | Out-String }
-                $code = $LASTEXITCODE
+                $code = Invoke-CodexWatched $cargs $prompt $material
                 $answer = if (Test-Path $Out) { Get-Content $Out -Raw } else { '' }
                 $usedModel = "$(if ($codexModel) { $codexModel } else { 'default' })/$($cfg.effort)"
             }
@@ -262,6 +306,10 @@ function Invoke-Helper([string]$who) {
                 # Per effort a list of models; each (key, model) pair has its own daily quota and its own parking.
                 $last = @{ ok = $false; reason = 'limit'; detail = 'no Gemini key/model available' }
                 $material = Get-Material
+                # The free API times out on very large inputs (>1 MB, e.g. a fanout chunk sized for the Gemini app). Pass such
+                # material on to the next helper instead of waiting for the timeout.
+                $maxKb = [int]($route.limits.gemini_max_input_kb ?? 400)
+                if ($material -and $material.Length -gt $maxKb * 1KB) { return @{ ok = $false; reason = 'skip'; detail = "material is $([int]($material.Length / 1KB)) KB, over the $maxKb KB the Gemini API handles in time" } }
                 foreach ($m in (Get-GeminiModels)) {
                     if (Test-Cooldown "gemini@$m") { continue }
                     foreach ($key in (Get-GeminiKeys)) {

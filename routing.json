@@ -81,12 +81,15 @@
 
   "limits": {
     "gemini_chunk_kb": 300,
+    "gemini_max_input_kb": 400,
     "gemini_app_chunk_kb": 1500,
     "codex_chunk_kb": 200,
     "gemini_app_daily_cap": 25,
     "perplexity_daily_cap": 40,
     "perplexity_app_daily_cap": 30,
     "gemini_cli_timeout_seconds": 240,
+    "codex_idle_seconds": 480,
+    "codex_timeout_seconds": 1800,
     "agy_max_inline_kb": 20,
     "park_hours": { "limit": 5, "busy": 0.25, "model_gone": 24, "auth": 1, "agy_limit": 24, "key_rejected": 24 }
   },
