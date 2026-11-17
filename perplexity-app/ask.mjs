@@ -12,7 +12,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { HUB, connect, startChrome, stopChrome, useNormalUserAgent, APP } from './chrome.mjs'
-import { closePopups, saveFailure } from '../robot-common/robot-util.mjs'
+import { closePopups, gotoWithRetry, saveFailure } from '../robot-common/robot-util.mjs'
+import { robotStatus } from '../robot-common/robot-status.mjs'
 
 const arg = name => {
   const i = process.argv.indexOf(`--${name}`)
@@ -34,8 +35,11 @@ if (!task || !out) {
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const T0 = Date.now()
 let lastStep = 'start'
+const status = robotStatus('perplexity-app')
+status.start()
 const mark = label => {
   lastStep = label
+  status.mark(label)
   if (process.env.ROBOT_DEBUG) console.error(`[${Math.round((Date.now() - T0) / 1000)}s] ${label}`)
 }
 // A normal click first (menu entries only react to a real one), then a forced click if the page is busy re-rendering.
@@ -59,7 +63,7 @@ try {
   page = await context.newPage()
   await useNormalUserAgent(context, page)
   await page.setViewportSize({ width: 1280, height: 900 })
-  await page.goto(APP, { waitUntil: 'domcontentloaded' })
+  await gotoWithRetry(page, APP)
   await sleep(3000)
   await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}) // a cold start keeps re-rendering for a while
   mark('page loaded')
@@ -183,31 +187,38 @@ try {
   await sleep(400)
   await page.keyboard.press('Enter')
   mark('submitted')
+  mark('answering')
 
   // Wait for the answer: it appears in .prose; the answer's Copy button / "Finished" label shows when it is done; then the text must stop changing.
-  const deadline = Date.now() + timeoutMs
   let last = ''
   let stable = 0
-  let polls = 0
-  while (Date.now() < deadline) {
-    await sleep(1500)
-    polls++
-    const text = (await page.locator('.prose').last().innerText().catch(() => '')).trim()
-    if (!text) {
-      if (polls >= 8) {
-        const body = await page.locator('main').innerText().catch(() => '')
-        if (LIMIT_RX.test(body)) {
-          console.error('LIMIT: Perplexity says a usage limit is reached.')
-          code = 5
-          throw new Error('limit')
+  for (let answerTry = 0; answerTry < 2 && !last; answerTry++) {
+    const deadline = Date.now() + timeoutMs
+    let polls = 0
+    while (Date.now() < deadline) {
+      await sleep(1500)
+      polls++
+      const text = (await page.locator('.prose').last().innerText().catch(() => '')).trim()
+      if (!text) {
+        if (polls >= 8) {
+          const body = await page.locator('main').innerText().catch(() => '')
+          if (LIMIT_RX.test(body)) {
+            console.error('LIMIT: Perplexity says a usage limit is reached.')
+            code = 5
+            throw new Error('limit')
+          }
         }
+        continue
       }
-      continue
+      const finished = (await page.getByRole('button', { name: /^copy$/i }).count()) > 0 || (await page.getByText(/^Finished\b/).count()) > 0
+      stable = text === last && (finished || stable >= 4) ? stable + 1 : text === last ? stable + 0.5 : 0
+      last = text
+      if (stable >= 2) break
     }
-    const finished = (await page.getByRole('button', { name: /^copy$/i }).count()) > 0 || (await page.getByText(/^Finished\b/).count()) > 0
-    stable = text === last && (finished || stable >= 4) ? stable + 1 : text === last ? stable + 0.5 : 0
-    last = text
-    if (stable >= 2) break
+    if (!last && answerTry === 0) {
+      console.error('RETRY: no answer before timeout; reloading once')
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {})
+    }
   }
   mark('answer done')
   if (!last) throw new Error('no answer before the timeout')

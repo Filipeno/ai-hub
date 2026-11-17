@@ -10,6 +10,19 @@ export const FAIL_DIR = join(HUB, 'files', 'robot-failures')
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 const race = (p, ms, fallback) => Promise.race([p, sleep(ms).then(() => fallback)]) // a frozen page must never hang the robot
 
+// A cold Chrome navigation occasionally stalls before a page exists. Reload once and retry only timeout failures;
+// auth and selector errors should still surface immediately instead of hiding a real UI change.
+export async function gotoWithRetry (page, url, { timeout = 45000 } = {}) {
+  try {
+    return await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
+  } catch (error) {
+    if (!/timeout/i.test(String(error?.message ?? error))) throw error
+    console.error('RETRY: navigation timed out; reloading Chrome page once')
+    await page.reload({ waitUntil: 'domcontentloaded', timeout }).catch(() => {})
+    return await page.goto(url, { waitUntil: 'domcontentloaded', timeout })
+  }
+}
+
 // Words of buttons that only close something. Anything that buys, upgrades, accepts or allows is never clicked.
 const CLOSE = /^(close|dismiss|got it|not now|no thanks|maybe later|skip|ok, got it|zavřít|teď ne|rozumím|ne, děkuji|později)$/i
 const NEVER = /upgrade|subscribe|buy|purchase|accept|agree|allow|continue|sign|log ?in|try|start|enable|turn on|upgrad|předplat|koupit|přijmout|povolit/i

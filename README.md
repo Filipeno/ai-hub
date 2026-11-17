@@ -80,6 +80,10 @@ ai codex | ai gemini  # open a helper as the fallback boss when Claude is out of
 - **Helpers ask instead of guessing.** A helper that needs more information replies `QUESTION: ...`; the job is saved and the boss (or you, with `ask-answer <id> "..."`) answers it, then the job reruns.
 - Everything about who is good at what is data in [`routing.json`](routing.json). Edit it to change the behaviour; no code change needed.
 
+## Robot live status
+
+Each browser robot writes `state/robots/<robot>.json` (robot, pid, step label, started, heartbeat every 5 s, last result), atomically. A dead pid or a heartbeat older than 30 s means idle, so a killed robot never shows as busy. `bin/robot-peek.mjs gemini-app|perplexity [out.png]` (also `robot-peek.cmd`) saves a read-only screenshot of the running job page over the DevTools port: it takes no lock, opens nothing and never closes Chrome, and prints `idle` when no job runs. Only the robot name, a fixed step label, seconds and counts are exposed, never task or page text.
+
 ## The Gemini web app robot: read this
 
 The robot drives `gemini.google.com` with a hidden Chrome that is signed in to **your** Google account (its own profile folder, separate from your normal Chrome). It is what gives you live Google Search and the strongest Gemini models on your plan, but:

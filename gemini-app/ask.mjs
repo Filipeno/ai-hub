@@ -10,6 +10,7 @@ import { mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { HUB, connect, startChrome, stopChrome, useNormalUserAgent, APP } from './chrome.mjs'
 import { closePopups, gotoWithRetry, saveFailure } from '../robot-common/robot-util.mjs'
+import { robotStatus } from '../robot-common/robot-status.mjs'
 
 const arg = name => {
   const i = process.argv.indexOf(`--${name}`)
@@ -29,11 +30,21 @@ if (!task || !out) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
+// Step labels are fixed words (never task or page text): they go to the live status file and the status-line badge.
+const status = robotStatus('gemini-app')
+status.start()
+let lastStep = 'start'
+const mark = label => {
+  lastStep = label
+  status.mark(label)
+  if (process.env.ROBOT_DEBUG) console.error(`[step] ${label}`)
+}
 const SHOT = join(HUB, 'state', 'gemini-app-last.png')
 const LIMIT_RX = /(reached|hit) (your|the) (daily )?(limit|usage)|usage limit|come back (later|tomorrow)|try again (later|tomorrow)|too many requests/i
 const MODEL_INDEX = { lite: 0, flash: 1, pro: 2 }
 const LEVEL_INDEX = { low: 0, medium: 1, high: 2 }
 
+mark('starting chrome')
 const startedHere = await startChrome({ visible: false })
 const browser = await connect()
 let page
@@ -43,8 +54,10 @@ try {
   page = await context.newPage()
   await useNormalUserAgent(context, page)
   await page.setViewportSize({ width: 1280, height: 900 })
+  mark('loading page')
   await gotoWithRetry(page, APP)
   await sleep(3000)
+  mark('page loaded')
   const composerSel = 'div.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"], [role="textbox"]'
   const signedOut = page.url().includes('accounts.google.com') || (await page.locator('a[href*="accounts.google.com/ServiceLogin"]').count()) > 0
   if (signedOut) {
@@ -72,6 +85,7 @@ try {
     await sleep(800)
   }
   // Pick the model and thinking level in the app's own menu (the default is the biggest model on high, which is slow).
+  if (modelArg || thinkArg) mark('picking model')
   if (modelArg in MODEL_INDEX) {
     await openPicker()
     await radios.nth(MODEL_INDEX[modelArg]).click()
@@ -133,6 +147,7 @@ try {
   }
 
   // Attach files from Google Drive through Gemini's own picker (2nd entry of the upload menu).
+  if (driveFiles.length || localFiles.length) mark('attaching files')
   for (const name of driveFiles) {
     await openPlusMenu()
     await (await uploadEntry('uploader-drive-button', 1)).click()
@@ -173,6 +188,7 @@ try {
   await page.keyboard.insertText(task)
   await sleep(400)
   await page.keyboard.press('Enter')
+  mark('answering')
 
   // Wait for a new response to appear, then for its text to stop changing.
   let last = ''
@@ -207,6 +223,7 @@ try {
       await page.reload({ waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {})
     }
   }
+  mark('answer done')
   if (!last) throw new Error('no answer before the timeout')
   // Gemini sometimes answers with its own error text; that is a failed job, not an answer.
   if (last.length < 200 && /something went wrong|try your request again|encountering an error|try something else for you|can't help with that right now|něco se pokazilo|došlo k chybě/i.test(last)) {
@@ -222,7 +239,7 @@ try {
   code = 0
 } catch (e) {
   if (code === 3) console.error(`FAILED: ${String(e.message).split('\n')[0]}`)
-  if (code === 3) await saveFailure(page, 'gemini-app', 'see error', e)
+  if (code === 3) await saveFailure(page, 'gemini-app', lastStep, e)
   try {
     mkdirSync(dirname(SHOT), { recursive: true })
     await page?.screenshot({ path: SHOT })
