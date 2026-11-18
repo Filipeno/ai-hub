@@ -53,6 +53,11 @@ route.ps1 -Task "summarize what changed" -Source C:\code\myrepo
 # One job, best helper chosen by kind, model by effort, automatic fallback
 ask.ps1 -Kind web-research -Effort medium -Dir . -Out files\answer.md -Task "Latest stable Godot version and what changed?"
 
+# A follow-up that continues the earlier conversation of Codex, the Gemini app or the Perplexity app (-Thread: same name = same chat; no -Thread = fresh)
+ask.ps1 -Kind second-opinion -Thread my-review -Dir . -Out files\answer2.md -Task "Now check the second point again."
+# Threads live in state\threads.json (name -> helper -> chat URL or session id), expire after 7 days unused, and a dead chat just starts fresh.
+# The Gemini API/CLI and agy ignore -Thread (one log line). Use it for follow-ups to related jobs, not for unrelated ones.
+
 # A big folder: split into chunks, run them on several AIs at once, combine the answers
 fanout.ps1 -Task "Where is authentication handled?" -Source C:\code\myrepo -Out files\answer.md
 

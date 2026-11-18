@@ -25,6 +25,7 @@ param(
     [string]$Model,
     [switch]$NoDisk,
     [switch]$NoFallback,   # run only the named -Helper; fail instead of moving to the next one (used by council.ps1)
+    [string]$Thread,       # named thread: the same name continues that helper's earlier conversation (codex, gemini-app, perplexity app only)
     [string]$AnswerId,
     [string]$Answer,
     [string[]]$DriveFile   # file names in your Google Drive to attach (gemini-app only; works for folders you sync to Drive)
@@ -62,6 +63,7 @@ if ($AnswerId) {
     $saved = Get-Content $qFile -Raw | ConvertFrom-Json
     $Helper = $saved.helper; $Mode = $saved.mode; $Dir = $saved.dir; $Out = $saved.out; $Task = $saved.task
     $DriveFile = @($saved.driveFile | Where-Object { $_ }); $Kind = "$($saved.kind)"; $Effort = "$($saved.effort)"; $InputFile = "$($saved.inputFile)"
+    if (-not $Thread -and $saved.thread) { $Thread = "$($saved.thread)" }   # a question re-run keeps its thread
     if (-not $Kind) { $Kind = 'general' }
     $qa = @($saved.qa | Where-Object { $_ }) + @([pscustomobject]@{ q = $saved.question; a = $Answer })
     Remove-Item $qFile
@@ -71,6 +73,7 @@ if ($AnswerId) {
 }
 if (-not ($Dir -and $Out -and $Task)) { Write-Output 'ERROR: -Dir, -Out and -Task are required (or -AnswerId and -Answer).'; exit 2 }
 if ($InputFile -and -not (Test-Path $InputFile)) { Write-Output "ERROR: input file not found: $InputFile"; exit 2 }
+if ($Thread -and $Thread -cnotmatch '^[a-z0-9-]{1,40}$') { Write-Output 'ERROR: -Thread must be 1-40 characters from a-z, 0-9 and "-".'; exit 2 }
 New-Item -ItemType Directory -Force (Split-Path $Out) | Out-Null
 
 $kindInfo = if ($route.kinds.ContainsKey($Kind)) { $route.kinds[$Kind] } else { $route.kinds['general'] }
@@ -143,6 +146,54 @@ function Get-PplxCount {
 }
 function Add-PplxCount { @{ date = (Get-Date).ToString('yyyy-MM-dd'); count = (Get-PplxCount) + 1 } | ConvertTo-Json | Set-Content $pplxCountFile }
 
+# ---- named threads (-Thread <name>): a follow-up job continues that helper's earlier conversation ----
+# state\threads.json = { "<name>": { "<helper>": { "id_or_url": "...", "updated": <unix seconds> } } }. Only codex (session id), gemini-app and
+# the perplexity app (chat URL) have threads; each helper keeps its own entry under the name, so a fallback to another helper starts fresh there.
+# An entry unused for 7 days expires. A thread that no longer works never fails the job: the helper starts fresh and the entry is replaced.
+$threadFile = Join-Path $stateDir 'threads.json'
+$threadHelpers = @('codex', 'gemini-app', 'perplexity')
+$threadTtl = 7 * 86400
+function Use-ThreadLock([scriptblock]$body) {
+    $lock = [System.Threading.Mutex]::new($false, 'Global\ai-hub-threads')
+    try { [void]$lock.WaitOne(10000) } catch [System.Threading.AbandonedMutexException] {}
+    try { & $body } finally { try { $lock.ReleaseMutex() } catch {} }
+}
+function Read-Threads {
+    if (Test-Path $threadFile) {
+        try { $t = Get-Content $threadFile -Raw | ConvertFrom-Json -AsHashtable; if ($t -is [hashtable]) { return $t } } catch { Write-Log 'threads.json unreadable: continuing with no threads' }
+    }
+    return @{}
+}
+function Write-Threads($t) {   # temp file + rename: a reader never sees half a file
+    $tmp = "$threadFile.$PID.tmp"
+    $t | ConvertTo-Json -Depth 5 | Set-Content $tmp -Encoding utf8
+    Move-Item $tmp $threadFile -Force
+}
+function Get-ThreadRef([string]$who) {   # the stored id or URL of this thread for this helper; $null when there is none or it expired
+    if (-not $Thread -or $who -notin $threadHelpers) { return $null }
+    Use-ThreadLock {
+        $e = (Read-Threads)[$Thread]?[$who]
+        if (-not $e -or -not $e.id_or_url) { return }
+        if ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [int64]$e.updated -gt $threadTtl) { Write-Log "thread ${Thread}: $who entry expired (7 days unused); starting fresh"; return }
+        return "$($e.id_or_url)"
+    }
+}
+function Set-ThreadRef([string]$who, [string]$ref) {
+    if (-not $Thread -or $who -notin $threadHelpers -or -not $ref) { return }
+    Use-ThreadLock {
+        $t = Read-Threads
+        if ($t[$Thread] -isnot [hashtable]) { $t[$Thread] = @{} }
+        $t[$Thread][$who] = @{ id_or_url = $ref; updated = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+        Write-Threads $t
+    }
+}
+function Remove-ThreadRef([string]$who) {
+    Use-ThreadLock {
+        $t = Read-Threads
+        if ($t[$Thread] -is [hashtable] -and $t[$Thread].ContainsKey($who)) { $t[$Thread].Remove($who); if ($t[$Thread].Count -eq 0) { $t.Remove($Thread) }; Write-Threads $t }
+    }
+}
+
 function Get-Reason([string]$all) {
     # Codex echoes the whole conversation to stderr, so a task that only mentions "rate limit" or "quota" looked like a
     # limit hit. When the log has real error lines, classify by those alone; a transcript without any is a plain error.
@@ -160,13 +211,20 @@ function Get-CodexSandboxArgs {
     if ((Test-Path $toml) -and ((Get-Content $toml -Raw) -match '(?ms)^\[windows\][^\[]*?^\s*sandbox\s*=\s*"([^"]+)"')) { return @('-c', "windows.sandbox=`"$($Matches[1])`"") }
     return @()
 }
-function Invoke-CodexWatched($cargs, [string]$prompt, [string]$material) {
+function Invoke-CodexWatched($cargs, [string]$prompt, [string]$material, [string]$workdir = '', [string]$jsonFile = '') {
     $idleMax = [int]($route.limits.codex_idle_seconds ?? 240)
     $hardMax = [int]($route.limits.codex_timeout_seconds ?? 1800)
-    $job = Start-Job -ArgumentList (, $cargs), $prompt, $material, $err -ScriptBlock {
-        param($cargs, $prompt, $material, $err)
+    # $workdir: `codex exec resume` has no -C, so the job starts in the folder. $jsonFile: with --json (thread jobs only) stdout is
+    # the event stream that carries the session id; without it stdout is dropped as before.
+    $job = Start-Job -ArgumentList (, $cargs), $prompt, $material, $err, $workdir, $jsonFile -ScriptBlock {
+        param($cargs, $prompt, $material, $err, $workdir, $jsonFile)
         $cargs = @($cargs | ForEach-Object { $_ })   # the job hands the list over nested one level deep
-        if ($material) { $null = ("$prompt`n`n--- MATERIAL ---`n$material") | & codex @cargs - 2>$err }
+        if ($workdir) { Set-Location $workdir }
+        if ($jsonFile) {
+            if ($material) { ("$prompt`n`n--- MATERIAL ---`n$material") | & codex @cargs - 2>$err | Set-Content $jsonFile }
+            else { & codex @cargs $prompt 2>$err | Set-Content $jsonFile }
+        }
+        elseif ($material) { $null = ("$prompt`n`n--- MATERIAL ---`n$material") | & codex @cargs - 2>$err }
         else { $null = & codex @cargs $prompt 2>$err }
         $LASTEXITCODE
     }
@@ -178,6 +236,7 @@ function Invoke-CodexWatched($cargs, [string]$prompt, [string]$material) {
         $kids = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ParentProcessId -in $ids })
         $cpu = 0.0; foreach ($p in @($procs) + $kids) { $cpu += ((Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue).TotalProcessorTime.TotalSeconds ?? 0) }
         $log = if (Test-Path $err) { (Get-Item $err).Length } else { 0 }
+        if ($jsonFile -and (Test-Path $jsonFile)) { $log += (Get-Item $jsonFile).Length }   # the event stream is progress too
         if ([math]::Abs($cpu - $lastCpu) -gt 0.3 -or $log -ne $lastLog) { $lastChange = Get-Date; $lastCpu = $cpu; $lastLog = $log }
         $idle = ((Get-Date) - $lastChange).TotalSeconds; $total = ((Get-Date) - $start).TotalSeconds
         if ($idle -ge $idleMax -or $total -ge $hardMax) {
@@ -194,8 +253,32 @@ function Invoke-CodexWatched($cargs, [string]$prompt, [string]$material) {
     return [int]($code ?? 1)
 }
 
+# After a threaded robot job: the robot says in one fixed stderr line whether it continued, started fresh or found the stored chat gone
+# ("THREAD: continued|fresh|stale"), and writes the chat URL it ended on to --thread-out. Store that URL; log only the name and the word.
+function Complete-RobotThread([string]$who, [string]$thrOut, [int]$code, [string]$errFile) {
+    $how = 'fresh'
+    foreach ($l in (Get-Content $errFile -ErrorAction SilentlyContinue)) { if ($l -match '^THREAD: (continued|fresh|stale)\b') { $how = $Matches[1] } }
+    $url = if (Test-Path $thrOut) { (Get-Content $thrOut -Raw -ErrorAction SilentlyContinue)?.Trim() } else { $null }
+    $shape = if ($who -eq 'gemini-app') { '^https://gemini\.google\.com/app/[0-9a-f]+$' } else { '^https://www\.perplexity\.ai/(search|session)/[\w.-]+$' }
+    if ($code -eq 0 -and $url -and $url -match $shape) { Set-ThreadRef $who $url }   # replaces a stale entry too; a failed job leaves the old one
+    Write-Log "thread ${Thread}: $who $(if ($how -eq 'stale') { 'stored chat was gone; started fresh' } else { $how })"
+}
+
+# Reads the --json event stream of a threaded Codex job: returns the session id and copies error events into the stderr log,
+# so Get-Reason still sees usage limits, busy and auth errors (with --json they arrive on stdout, not stderr).
+function Read-CodexEvents([string]$jsonFile, [int]$code) {
+    $id = $null
+    foreach ($line in (Get-Content $jsonFile -ErrorAction SilentlyContinue)) {
+        try { $ev = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if ($ev.type -eq 'thread.started' -and $ev.thread_id) { $id = "$($ev.thread_id)" }
+        elseif ($code -ne 0 -and $ev.type -in 'error', 'turn.failed') { $m = $ev.message ?? $ev.error.message; if ($m) { Add-Content $err "ERROR: $m" } }
+    }
+    return $id
+}
+
 function Invoke-Helper([string]$who) {
     $err = New-TemporaryFile
+    $thrOut = $null; $jsonFile = $null
     try {
         switch ($who) {
             'codex' {
@@ -207,7 +290,40 @@ function Invoke-Helper([string]$who) {
                 $codexModel = if ($Model) { $Model } else { $cfg.model }
                 if ($codexModel) { $cargs += @('-m', $codexModel) }   # empty = Codex's own default model
                 $material = Get-Material
-                $code = Invoke-CodexWatched $cargs $prompt $material
+                if (-not $Thread) {
+                    $code = Invoke-CodexWatched $cargs $prompt $material
+                } else {
+                    # Threaded job: --json gives the session id (thread.started). A stored id continues that session with `codex exec resume`
+                    # (no -s / -C there: the sandbox goes in as a config value, the folder as the job's working directory).
+                    $jsonFile = New-TemporaryFile
+                    $sandbox = if ($Mode -eq 'edit') { 'workspace-write' } else { 'read-only' }
+                    $ref = Get-ThreadRef 'codex'
+                    $how = 'fresh'
+                    if ($ref) {
+                        $rargs = @('exec', 'resume', '--ignore-user-config') + (Get-CodexSandboxArgs) + @('--skip-git-repo-check', '-c', "sandbox_mode=`"$sandbox`"", '-o', $Out,
+                            '-c', "model_reasoning_effort=$($cfg.effort)", '--json')
+                        if ($codexModel) { $rargs += @('-m', $codexModel) }
+                        $rargs += $ref
+                        $code = Invoke-CodexWatched $rargs $prompt $material $Dir $jsonFile
+                        [void](Read-CodexEvents $jsonFile $code)
+                        $why = (Get-Content $err -Raw -ErrorAction SilentlyContinue) ?? ''
+                        # Only a session that is gone starts fresh. A usage limit or a busy service takes the normal parking path instead.
+                        if ($code -ne 0 -and $why -match 'no rollout found|thread/resume|no session|no thread|session .*not found|invalid (session|thread)' -and $why -notmatch $limitRx) {
+                            $how = 'stale'
+                            Remove-ThreadRef 'codex'
+                            Set-Content $err ''; Set-Content $jsonFile ''; Remove-Item $Out -ErrorAction SilentlyContinue
+                            $ref = $null
+                        } else { $how = 'continued' }
+                    }
+                    if (-not $ref) {
+                        $code = Invoke-CodexWatched ($cargs + '--json') $prompt $material '' $jsonFile
+                    }
+                    $newId = Read-CodexEvents $jsonFile $code
+                    # A value that is not a session id (corrupted entry) makes Codex open a NEW session instead of failing: the id differs.
+                    if ($how -eq 'continued' -and $newId -and $newId -ne $ref) { $how = 'stale' }
+                    if ($code -eq 0 -and (Test-Path $Out) -and $newId) { Set-ThreadRef 'codex' $newId }
+                    Write-Log "thread ${Thread}: codex $(if ($how -eq 'stale') { 'stored session was gone; started fresh and replaced it' } else { $how })"
+                }
                 $answer = if (Test-Path $Out) { Get-Content $Out -Raw } else { '' }
                 $usedModel = "$(if ($codexModel) { $codexModel } else { 'default' })/$($cfg.effort)"
             }
@@ -228,7 +344,9 @@ function Invoke-Helper([string]$who) {
                     $robotArgs = @('--timeout', '150', '--model', $appModel, '--out', $Out)
                     if ($DriveFile) { $robotArgs += '--drive'; $appPrompt = "Use these files from my Google Drive: $($DriveFile -join ', '). $prompt" }
                     if ($InputFile) { $robotArgs += @('--file', $InputFile) }
+                    if ($Thread) { $thrOut = New-TemporaryFile; $robotArgs += @('--thread-out', $thrOut); $ref = Get-ThreadRef 'perplexity'; if ($ref) { $robotArgs += @('--thread-url', $ref) } }
                     try { $text = & node $robotJs @robotArgs --task $appPrompt 2>$err | Out-String; $code = $LASTEXITCODE } finally { try { $robotLock.ReleaseMutex() } catch {} }
+                    if ($Thread) { Complete-RobotThread 'perplexity' $thrOut $code $err }
                     $answer = if ($code -eq 0 -and (Test-Path $Out)) { Get-Content $Out -Raw } else { '' }
                     if ($code -eq 4) { return @{ ok = $false; reason = 'auth'; detail = 'Perplexity robot not signed in (run: perplexity-app login)' } }
                     if ($code -eq 5) { return @{ ok = $false; reason = 'limit'; detail = 'Perplexity says a usage limit is reached' } }
@@ -294,7 +412,9 @@ function Invoke-Helper([string]$who) {
                 $robot = @('--task', $prompt, '--out', $Out, '--timeout', '300', '--model', $cfg.model, '--think', $cfg.think)
                 foreach ($f in $DriveFile) { $robot += @('--drive', $f) }
                 if ($InputFile) { $robot += @('--file', $InputFile) }
+                if ($Thread) { $thrOut = New-TemporaryFile; $robot += @('--thread-out', $thrOut); $ref = Get-ThreadRef 'gemini-app'; if ($ref) { $robot += @('--thread-url', $ref) } }
                 try { $text = & node (Join-Path $hub 'gemini-app\ask.mjs') @robot 2>$err | Out-String; $code = $LASTEXITCODE } finally { try { $robotLock.ReleaseMutex() } catch {} }
+                if ($Thread) { Complete-RobotThread 'gemini-app' $thrOut $code $err }
                 $answer = if ($code -eq 0 -and (Test-Path $Out)) { Get-Content $Out -Raw } else { '' }
                 $usedModel = "$($cfg.model)/$($cfg.think)"
                 if ($code -eq 4) { return @{ ok = $false; reason = 'auth'; detail = 'robot Chrome not signed in (run: gemini-app login)' } }
@@ -352,13 +472,13 @@ function Invoke-Helper([string]$who) {
         if ($code -eq 0 -and $answer -and $answer.Trim()) { return @{ ok = $true; model = $usedModel } }
         $all = "$text" + (Get-Content $err -Raw)
         return @{ ok = $false; reason = (Get-Reason $all); detail = (Get-Detail $all) }
-    } finally { Remove-Item $err -ErrorAction SilentlyContinue }
+    } finally { @($err, $thrOut, $jsonFile) | Where-Object { $_ } | Remove-Item -ErrorAction SilentlyContinue }
 }
 
 # Saves a helper's question and tells the caller. The boss AI answers it, or asks the user.
 function Save-Question([string]$who, [string]$question) {
     $id = (Get-Date).ToString('yyyyMMdd-HHmmss') + "-$who"
-    [pscustomobject]@{ id = $id; helper = $who; mode = $Mode; dir = $Dir; out = $Out; task = $Task; driveFile = $DriveFile; kind = $Kind; effort = $Effort; inputFile = $InputFile; qa = $qa; question = $question } |
+    [pscustomobject]@{ id = $id; helper = $who; mode = $Mode; dir = $Dir; out = $Out; task = $Task; driveFile = $DriveFile; kind = $Kind; effort = $Effort; inputFile = $InputFile; thread = $Thread; qa = $qa; question = $question } |
         ConvertTo-Json -Depth 5 | Set-Content (Join-Path $questionDir "$id.json")
     $msg = @"
 # Question from $who
@@ -401,7 +521,7 @@ Write-Log "job kind=$Kind effort=$Effort mode=$Mode chain=$($chain -join '>')"
 foreach ($who in $chain) {
     $parked = if ($who -eq 'gemini') { -not (Test-GeminiReady) } else { Test-Cooldown $who }
     if ($parked) { Write-Log "$who skipped (cooldown)"; continue }
-    $r = Invoke-Helper $who
+    if ($Thread -and $who -notin $threadHelpers) { Write-Log "thread ${Thread}: $who has no threads; -Thread ignored" }
     if ($r.ok) {
         $first = (Get-Content $Out | Where-Object { $_.Trim() } | Select-Object -First 1)
         if ($first -match '^\W*QUESTION:\s*(.+)$') { Save-Question $who $Matches[1].Trim() }

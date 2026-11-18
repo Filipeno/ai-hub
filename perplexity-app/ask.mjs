@@ -27,6 +27,9 @@ const localFiles = all('file')
 const useDrive = process.argv.includes('--drive')
 const incognito = process.argv.includes('--incognito')
 const timeoutMs = Number(arg('timeout') ?? 120) * 1000
+const threadUrl = arg('thread-url') // continue this earlier thread (https://www.perplexity.ai/session/<id>; /search/<slug> also accepted)
+const threadOut = arg('thread-out') // write the URL of the thread this job ended in, for the next follow-up
+const THREAD_RX = /^https:\/\/www\.perplexity\.ai\/(search|session)\/[\w.-]+$/
 if (!task || !out) {
   console.error('Usage: node ask.mjs --task "<question>" --out <file> [--model "<name>"] [--file <path>]... [--drive]')
   process.exit(2)
@@ -63,7 +66,25 @@ try {
   page = await context.newPage()
   await useNormalUserAgent(context, page)
   await page.setViewportSize({ width: 1280, height: 900 })
-  await gotoWithRetry(page, APP)
+  // A follow-up job opens the stored thread. If it is gone (deleted, wrong account, malformed URL) the page shows no answer:
+  // then start a fresh thread in this same run. A broken thread never fails the job.
+  let continued = false
+  if (threadUrl) {
+    mark('opening thread')
+    if (THREAD_RX.test(threadUrl)) {
+      try {
+        await gotoWithRetry(page, threadUrl)
+        for (let i = 0; i < 8 && !continued; i++) {
+          await sleep(1500)
+          continued = THREAD_RX.test(page.url().split(/[?#]/)[0]) && (await page.locator('.prose').count().catch(() => 0)) > 0
+        }
+      } catch {
+        continued = false
+      }
+    }
+    console.error(`THREAD: ${continued ? 'continued' : 'stale'}`)
+  } else if (threadOut) console.error('THREAD: fresh')
+  if (!continued) await gotoWithRetry(page, APP)
   await sleep(3000)
   await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {}) // a cold start keeps re-rendering for a while
   mark('page loaded')
@@ -86,16 +107,19 @@ try {
   }
 
   // Search mode, always. The page remembers the last mode and may open in Computer mode.
+  // A continued thread has no mode toggle or model menu: it keeps the mode and model it was started with.
   const searchToggle = page.getByRole('button', { name: 'Search', exact: true }).first()
   // The toggle reports its state in aria-pressed. Only click when Search is not already on (a second click must not switch it off).
-  for (let attempt = 0; attempt < 3 && (await searchToggle.getAttribute('aria-pressed')) !== 'true'; attempt++) {
-    await tap(searchToggle).catch(() => {}) // the loop re-checks the state either way
-    await sleep(1200)
+  if (!continued) {
+    for (let attempt = 0; attempt < 3 && (await searchToggle.getAttribute('aria-pressed')) !== 'true'; attempt++) {
+      await tap(searchToggle).catch(() => {}) // the loop re-checks the state either way
+      await sleep(1200)
+    }
+    if ((await searchToggle.getAttribute('aria-pressed')) !== 'true') throw new Error('could not switch to Search mode')
   }
-  if ((await searchToggle.getAttribute('aria-pressed')) !== 'true') throw new Error('could not switch to Search mode')
   mark('search mode')
 
-  if (incognito) {
+  if (incognito && !continued) {
     const toggle = page.getByRole('button', { name: /incognito/i }).first()
     if (await toggle.isVisible().catch(() => false)) {
       await tap(toggle)
@@ -108,6 +132,7 @@ try {
   // On a cold start the page re-renders while it hydrates, so the button is located and clicked by its position on screen (a mouse
   // click at its centre), retried once, and a failure here never stops the job: the question is still asked with the current model.
   try {
+    if (continued) throw new Error('continued thread keeps its model')
     const toggleBox = await searchToggle.boundingBox()
     const modelButtonCentre = () =>
       page.evaluate(({ top, left }) => {
@@ -183,6 +208,9 @@ try {
     }
   }
 
+  // In a continued thread the earlier answers (and their Copy buttons) are already on the page: only a NEW answer counts.
+  const proseBefore = await page.locator('.prose').count().catch(() => 0)
+  const copyBefore = await page.getByRole('button', { name: /^copy$/i }).count().catch(() => 0)
   await page.keyboard.insertText(task)
   await sleep(400)
   await page.keyboard.press('Enter')
@@ -198,7 +226,7 @@ try {
     while (Date.now() < deadline) {
       await sleep(1500)
       polls++
-      const text = (await page.locator('.prose').last().innerText().catch(() => '')).trim()
+      const text = (await page.locator('.prose').count()) > proseBefore ? (await page.locator('.prose').last().innerText().catch(() => '')).trim() : ''
       if (!text) {
         if (polls >= 8) {
           const body = await page.locator('main').innerText().catch(() => '')
@@ -210,7 +238,7 @@ try {
         }
         continue
       }
-      const finished = (await page.getByRole('button', { name: /^copy$/i }).count()) > 0 || (await page.getByText(/^Finished\b/).count()) > 0
+      const finished = (await page.getByRole('button', { name: /^copy$/i }).count()) > copyBefore || (!continued && (await page.getByText(/^Finished\b/).count()) > 0)
       stable = text === last && (finished || stable >= 4) ? stable + 1 : text === last ? stable + 0.5 : 0
       last = text
       if (stable >= 2) break
@@ -253,6 +281,12 @@ try {
   const text = sources.length ? `${answer}\n\nSources:\n${sources.map(s => `- ${s.title} - ${s.url}`).join('\n')}` : answer
   mkdirSync(dirname(out), { recursive: true })
   writeFileSync(out, text + '\n')
+  if (threadOut) {
+    // The thread's own URL (it gets its slug once the first answer starts); only the plain /search/<slug> shape is kept.
+    const u = page.url().split(/[?#]/)[0]
+    if (process.env.ROBOT_DEBUG) console.error(`DEBUG thread url shape: ${u.replace(/[\w-]{8,}/g, '<x>')}`)
+    if (THREAD_RX.test(u)) writeFileSync(threadOut, u)
+  }
   console.log(`OK out=${out}`)
   code = 0
 } catch (e) {

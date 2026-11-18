@@ -19,8 +19,11 @@ const arg = name => {
 const all = name => process.argv.flatMap((a, i) => (a === `--${name}` && process.argv[i + 1] ? [process.argv[i + 1]] : []))
 const driveFiles = all('drive')
 const localFiles = all('file')
-const modelArg = arg('model') // lite | flash | pro
-const thinkArg = arg('think') // low | medium | high
+let modelArg = arg('model') // lite | flash | pro
+let thinkArg = arg('think') // low | medium | high
+const threadUrl = arg('thread-url') // continue this earlier chat (https://gemini.google.com/app/<id>)
+const threadOut = arg('thread-out') // write the URL of the chat this job ended in, for the next follow-up
+const THREAD_RX = /^https:\/\/gemini\.google\.com\/app\/[0-9a-f]+$/
 const task = arg('task')
 const out = arg('out')
 const timeoutMs = Number(arg('timeout') ?? 300) * 1000
@@ -54,9 +57,36 @@ try {
   page = await context.newPage()
   await useNormalUserAgent(context, page)
   await page.setViewportSize({ width: 1280, height: 900 })
+  // A follow-up job opens the stored chat. If that chat is gone (deleted, wrong account, malformed URL) the page lands elsewhere:
+  // then start a fresh chat in this same run. A broken thread never fails the job.
+  let continued = false
+  if (threadUrl) {
+    mark('opening thread')
+    if (THREAD_RX.test(threadUrl)) {
+      try {
+        await gotoWithRetry(page, `${threadUrl}?hl=en`)
+        // Opening an old chat is slow in the hidden Chrome (up to ~25 s). A gone chat redirects away from /app/<id>: stop waiting then.
+        for (let i = 0; i < 24 && !continued; i++) {
+          await sleep(1500)
+          const stillThere = THREAD_RX.test(page.url().split(/[?#]/)[0])
+          if (!stillThere) break
+          continued = (await page.locator('model-response').count().catch(() => 0)) > 0
+        }
+      } catch {
+        continued = false
+      }
+    }
+    console.error(`THREAD: ${continued ? 'continued' : 'stale'}`)
+    if (continued) {
+      modelArg = undefined // the open chat keeps its model; do not touch the picker
+      thinkArg = undefined
+    }
+  } else if (threadOut) console.error('THREAD: fresh')
   mark('loading page')
-  await gotoWithRetry(page, APP)
-  await sleep(3000)
+  if (!continued) {
+    await gotoWithRetry(page, APP)
+    await sleep(3000)
+  }
   mark('page loaded')
   const composerSel = 'div.ql-editor[contenteditable="true"], rich-textarea [contenteditable="true"], [role="textbox"]'
   const signedOut = page.url().includes('accounts.google.com') || (await page.locator('a[href*="accounts.google.com/ServiceLogin"]').count()) > 0
@@ -235,6 +265,11 @@ try {
   const answer = last.split('\n').filter(l => !/^\s*(TXT|\+ \d+)\s*$/.test(l)).map(l => l.replace(/\s+$/, '')).join('\n').trim()
   mkdirSync(dirname(out), { recursive: true })
   writeFileSync(out, answer + '\n')
+  if (threadOut) {
+    // The chat's own URL (it gets its id after the first prompt); only the plain /app/<id> shape is kept.
+    const u = page.url().split(/[?#]/)[0]
+    if (THREAD_RX.test(u)) writeFileSync(threadOut, u)
+  }
   console.log(`OK out=${out}`)
   code = 0
 } catch (e) {

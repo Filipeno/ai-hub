@@ -42,6 +42,9 @@ Run long jobs with `run_in_background: true`.
 ```powershell
 # one job: best helper by kind, model by effort, automatic fallback
 pwsh -NoProfile -File "{{HUB}}\bin\ask.ps1" -Kind <kind> -Effort <e> -Dir "<dir>" -Out "{{HUB}}\files\<job>\answer.md" -Task "<brief>" [-InputFile <material>] [-NoDisk] [-DriveFile "x.md"] [-Mode edit] [-Helper <first>]
+#   -Thread <name>  ([a-z0-9-]{1,40}) continue that helper's earlier conversation instead of starting fresh. Use it for a FOLLOW-UP to a related earlier
+#   job; give unrelated jobs no -Thread. Only codex, gemini-app and the perplexity app have threads (Gemini API/CLI and agy ignore it). Each helper keeps
+#   its own entry under the name (a fallback to another helper starts fresh there); state\threads.json; unused for 7 days = expires; a dead chat starts fresh.
 # big or many inputs: split into chunks, run them on several AIs at once, combine
 pwsh -NoProfile -File "{{HUB}}\bin\fanout.ps1" -Task "<question>" -Source <file|folder> -Out "{{HUB}}\files\<job>\answer.md" [-Kind big-read] [-Effort e] [-MaxChunks 8]
 # a whole project folder question in one line
