@@ -35,7 +35,17 @@ function Test-Helper([string]$name, [hashtable]$extra = @{}) {
 
 # 1. Helpers
 if (On 'gemini') { Test-Helper 'gemini' }
-if (On 'codex') { Test-Helper 'codex' }
+# Codex parked on a known usage limit (cooldown still running AND its last parking failure in the log is "codex failed: limit") is a WARN, not a
+# failure: nothing is broken, the quota just resets later. Any other reason for a failing Codex still fails.
+if (On 'codex') {
+    $codexUntil = 0
+    try { $codexUntil = [int64]((Get-Content (Join-Path $Hub 'state\cooldown.json') -Raw | ConvertFrom-Json).codex) } catch {}
+    $codexLast = (Get-Content (Join-Path $Hub 'state\ask.log') -ErrorAction SilentlyContinue | Where-Object { $_ -match '^\S+ \S+ codex failed: (limit|busy|auth)' } | Select-Object -Last 1)
+    if ($codexUntil -gt [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -and $codexLast -match 'codex failed: limit') {
+        $until = [DateTimeOffset]::FromUnixTimeSeconds($codexUntil).LocalDateTime.ToString('yyyy-MM-dd HH:mm')
+        $results['codex'] = [ordered]@{ ok = $true; warn = $true; seconds = 0; detail = "usage limit, parked until $until; not tested" }
+    } else { Test-Helper 'codex' }
+}
 if (-not $Quick) {
     if (On 'gemini-app') { Test-Helper 'gemini-app' @{ NoDisk = $true; InputFile = $probe } }
     if (On 'perplexity') { Test-Helper 'perplexity' @{ NoDisk = $true; InputFile = $probe } }
@@ -108,7 +118,7 @@ $now | ConvertTo-Json -Depth 5 | Set-Content $seenFile
 # 4. Report
 $failed = @($results.Keys | Where-Object { -not $results[$_].ok })
 $lines = @("# AI hub self-test $stamp $(Get-Date -Format 'HH:mm')", '')
-foreach ($k in $results.Keys) { $r = $results[$k]; $lines += "- $(if ($r.ok) { 'OK  ' } else { 'FAIL' }) **$k** ($($r.seconds) s): $($r.detail)" }
+foreach ($k in $results.Keys) { $r = $results[$k]; $lines += "- $(if ($r.warn) { 'WARN' } elseif ($r.ok) { 'OK  ' } else { 'FAIL' }) **$k** ($($r.seconds) s): $($r.detail)" }
 if ($modelChanges) { $lines += '', '## Model changes'; $lines += $modelChanges | ForEach-Object { "- $_" } }
 if ($notes) { $lines += '', '## Notes'; $lines += $notes | ForEach-Object { "- $_" } }
 $snaps = Join-Path $Hub 'files\robot-failures'
