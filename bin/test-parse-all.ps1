@@ -9,6 +9,11 @@ $ErrorFiles = @()
 $PowerShellFiles = Get-ChildItem -Path "$PSScriptRoot\*.ps1"
 
 foreach ($File in $PowerShellFiles) {
+    # Skip this test script itself
+    if ($File.Name -eq "test-parse-all.ps1") {
+        continue
+    }
+
     # Create a variable to capture errors
     $Errors = @()
 
