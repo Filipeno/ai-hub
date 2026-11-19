@@ -15,5 +15,6 @@ Every script in `bin/`, with the first comment line of the script as its descrip
 | `perplexity-key.ps1` | Manage the Perplexity API key (stored in `~\.perplexity\api-key.txt`, only your Windows user can read it; never inside the hub). |
 | `route.ps1` | Decide where a job should go: which helper chain, which effort (model), whether to split it, or whether to just do it yourself. |
 | `selftest.ps1` | Daily AI hub self-test. Uses no Claude usage: one tiny job per helper + a model check. |
+| `test-cmd-targets.ps1` | Checks that every .ps1/.mjs called by bin/*.cmd exists (%~dp0 resolved to bin\, absolute paths checked as they are); exits 1 if any is missing, else prints OK. |
 | `test-parse-all.ps1` | Parses every bin/*.ps1 with the PowerShell parser; lists files with syntax errors and exits 1, else prints OK. |
 | `test-routing.ps1` | Checks routing.json: exits 1 if it is not valid JSON or a top-level entry is null or empty, else prints OK (-SelfTest also runs failure fixtures). |
