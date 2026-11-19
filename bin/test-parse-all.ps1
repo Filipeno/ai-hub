@@ -5,16 +5,25 @@
 $ErrorCount = 0
 $ErrorFiles = @()
 
-# Get all .ps1 files in bin directory
-$PowerShellFiles = Get-ChildItem -Path "bin" -Filter "*.ps1"
+# Get all .ps1 files in bin directory relative to this script's location
+$PowerShellFiles = Get-ChildItem -Path "$PSScriptRoot\*.ps1"
 
 foreach ($File in $PowerShellFiles) {
+    # Create a variable to capture errors
+    $Errors = @()
+
     try {
-        # Parse the file using PowerShell's parser
-        [System.Management.Automation.Language.Parser]::ParseFile($File.FullName, [ref]$null, [ref]$null)
+        # Parse the file using PowerShell's parser and capture syntax errors
+        [System.Management.Automation.Language.Parser]::ParseFile($File.FullName, [ref]$Errors, [ref]$null)
+
+        # If we have errors, increment counter and add to list
+        if ($Errors.Count -gt 0) {
+            $ErrorCount++
+            $ErrorFiles += $File.Name
+        }
     }
     catch {
-        # If parsing fails, add to error list
+        # If parsing fails due to I/O issues, add to error list
         $ErrorCount++
         $ErrorFiles += $File.Name
     }
